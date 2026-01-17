@@ -4,7 +4,8 @@ members = [
     "crates/puffgres-cli",
     "crates/puffgres-config",
     "crates/puffgres-core",
-    "crates/puffgres-tp",
+    "crates/puffgres-pg",
+    "crates/puffgres-state",
 ]
 
 [workspace.package]
@@ -17,7 +18,16 @@ clap = { version = "4.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
 thiserror = "1.0"
+anyhow = "1.0"
+dotenvy = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rs-puff = "0.1"
 puffgres-core = { path = "crates/puffgres-core" }
+puffgres-config = { path = "crates/puffgres-config" }
+puffgres-pg = { path = "crates/puffgres-pg" }
+puffgres-state = { path = "crates/puffgres-state" }
