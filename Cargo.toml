@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/puffgres-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/lucasgelfond/puffgres"
+
+[workspace.dependencies]
+clap = { version = "4.4", features = ["derive"] }

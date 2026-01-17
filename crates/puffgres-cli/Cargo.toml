@@ -1,0 +1,12 @@
+[package]
+name = "puffgres-cli"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "puffgres"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
