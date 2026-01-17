@@ -1,0 +1,41 @@
+{
+  "name": "basic_insert",
+  "description": "Test basic insert event routing and transformation",
+  "mapping": {
+    "name": "users_public",
+    "namespace": "users",
+    "source": {
+      "schema": "public",
+      "table": "users"
+    },
+    "id": {
+      "column": "id",
+      "type": "uint"
+    },
+    "columns": ["id", "name", "email"]
+  },
+  "events": [
+    {
+      "op": "insert",
+      "schema": "public",
+      "table": "users",
+      "lsn": 100,
+      "new": {
+        "id": 1,
+        "name": "Alice",
+        "email": "alice@example.com"
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "type": "upsert",
+      "id": 1,
+      "doc": {
+        "id": 1,
+        "name": "Alice",
+        "email": "alice@example.com"
+      }
+    }
+  ]
+}

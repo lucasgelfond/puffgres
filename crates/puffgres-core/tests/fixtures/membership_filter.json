@@ -1,0 +1,76 @@
+{
+  "name": "membership_filter",
+  "description": "Test membership predicate filtering",
+  "mapping": {
+    "name": "active_users",
+    "namespace": "active_users",
+    "source": {
+      "schema": "public",
+      "table": "users"
+    },
+    "id": {
+      "column": "id",
+      "type": "uint"
+    },
+    "columns": ["id", "name", "status"],
+    "membership": {
+      "mode": "dsl",
+      "predicate": "status = 'active'"
+    }
+  },
+  "events": [
+    {
+      "op": "insert",
+      "schema": "public",
+      "table": "users",
+      "lsn": 100,
+      "new": {
+        "id": 1,
+        "name": "Alice",
+        "status": "active"
+      }
+    },
+    {
+      "op": "insert",
+      "schema": "public",
+      "table": "users",
+      "lsn": 101,
+      "new": {
+        "id": 2,
+        "name": "Bob",
+        "status": "inactive"
+      }
+    },
+    {
+      "op": "insert",
+      "schema": "public",
+      "table": "users",
+      "lsn": 102,
+      "new": {
+        "id": 3,
+        "name": "Charlie",
+        "status": "active"
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "type": "upsert",
+      "id": 1,
+      "doc": {
+        "id": 1,
+        "name": "Alice",
+        "status": "active"
+      }
+    },
+    {
+      "type": "upsert",
+      "id": 3,
+      "doc": {
+        "id": 3,
+        "name": "Charlie",
+        "status": "active"
+      }
+    }
+  ]
+}
