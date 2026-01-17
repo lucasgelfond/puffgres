@@ -25,3 +25,14 @@ fn main() {
         Commands::Run => println!("puffgres run - not yet implemented"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_cli() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+}
