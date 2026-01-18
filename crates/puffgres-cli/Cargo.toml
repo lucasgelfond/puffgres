@@ -3,6 +3,9 @@ name = "puffgres-cli"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+description = "Use logical replication to keep Postgres and Turbopuffer in sync"
+homepage = "https://github.com/lucasgelfond/puffgres"
+license = "MIT"
 
 [[bin]]
 name = "puffgres"

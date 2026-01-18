@@ -4,3 +4,4 @@ Cargo.lock
 puffgres.toml
 /puffgres
 /npm/native/target
+.env
