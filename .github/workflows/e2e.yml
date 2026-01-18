@@ -7,24 +7,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  PLANETSCALE_ORG: ${{ vars.PLANETSCALE_ORG }}
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: puffgres_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
 
     steps:
       - uses: actions/checkout@v4
@@ -64,23 +53,68 @@ jobs:
         working-directory: npm
         run: pnpm run build
 
-      - name: Configure Postgres for logical replication
+      - name: Setup PlanetScale CLI
+        uses: planetscale/setup-pscale-action@v1
+
+      - name: Create PlanetScale Postgres database
+        id: create-db
+        env:
+          PLANETSCALE_SERVICE_TOKEN_ID: ${{ secrets.PLANETSCALE_SERVICE_TOKEN_ID }}
+          PLANETSCALE_SERVICE_TOKEN: ${{ secrets.PLANETSCALE_SERVICE_TOKEN }}
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -d puffgres_test -c "ALTER SYSTEM SET wal_level = logical;"
-          docker restart ${{ job.services.postgres.id }}
-          sleep 5
-          # Wait for postgres to be ready again
-          for i in {1..30}; do
-            if PGPASSWORD=postgres pg_isready -h localhost -U postgres; then
+          DB_NAME="e2e-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "db_name=$DB_NAME" >> $GITHUB_OUTPUT
+
+          # Create a new Postgres database
+          pscale database create "$DB_NAME" \
+            --org "$PLANETSCALE_ORG" \
+            --region us-east \
+            --plan scaler_pro \
+            --cluster-size PS-10 \
+            --engine postgres
+
+          echo "Created PlanetScale Postgres database: $DB_NAME"
+
+          # Wait for database to be ready
+          echo "Waiting for database to be ready..."
+          for i in {1..60}; do
+            state=$(pscale database show "$DB_NAME" --org "$PLANETSCALE_ORG" --format json | jq -r '.state')
+            if [ "$state" = "ready" ]; then
+              echo "Database is ready!"
               break
             fi
-            sleep 1
+            echo "Database state: $state (attempt $i/60)"
+            sleep 5
           done
+
+      - name: Get PlanetScale credentials
+        id: ps-creds
+        env:
+          PLANETSCALE_SERVICE_TOKEN_ID: ${{ secrets.PLANETSCALE_SERVICE_TOKEN_ID }}
+          PLANETSCALE_SERVICE_TOKEN: ${{ secrets.PLANETSCALE_SERVICE_TOKEN }}
+        run: |
+          DB_NAME="${{ steps.create-db.outputs.db_name }}"
+
+          # Create password for the main branch
+          response=$(pscale password create "$DB_NAME" main "e2e-creds" \
+            --org "$PLANETSCALE_ORG" \
+            --format json)
+
+          host=$(echo "$response" | jq -r '.access_host_url')
+          username=$(echo "$response" | jq -r '.username')
+          password=$(echo "$response" | jq -r '.plain_text')
+
+          # Construct Postgres connection URL
+          DATABASE_URL="postgres://${username}:${password}@${host}:5432/postgres?sslmode=require"
+
+          # Mask the password in logs
+          echo "::add-mask::$password"
+          echo "database_url=$DATABASE_URL" >> $GITHUB_OUTPUT
 
       - name: Run E2E tests
         working-directory: npm
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/puffgres_test
+          DATABASE_URL: ${{ steps.ps-creds.outputs.database_url }}
           TURBOPUFFER_API_KEY: ${{ secrets.TURBOPUFFER_API_KEY }}
         run: |
           # Skip if no turbopuffer key (PR from fork)
@@ -91,4 +125,20 @@ jobs:
           pnpm run test:e2e
 
       - name: Run Rust tests
+        env:
+          DATABASE_URL: ${{ steps.ps-creds.outputs.database_url }}
         run: cargo test
+
+      - name: Delete PlanetScale database
+        if: always()
+        env:
+          PLANETSCALE_SERVICE_TOKEN_ID: ${{ secrets.PLANETSCALE_SERVICE_TOKEN_ID }}
+          PLANETSCALE_SERVICE_TOKEN: ${{ secrets.PLANETSCALE_SERVICE_TOKEN }}
+        run: |
+          DB_NAME="${{ steps.create-db.outputs.db_name }}"
+          if [ -n "$DB_NAME" ]; then
+            pscale database delete "$DB_NAME" \
+              --org "$PLANETSCALE_ORG" \
+              --force || true
+            echo "Deleted PlanetScale database: $DB_NAME"
+          fi
