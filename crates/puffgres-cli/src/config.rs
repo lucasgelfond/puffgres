@@ -6,13 +6,17 @@ use serde::Deserialize;
 
 use puffgres_config::MigrationConfig;
 use puffgres_core::Mapping;
+use puffgres_pg::LocalMigration;
 
 /// Project configuration from puffgres.toml
 #[derive(Debug, Deserialize)]
 pub struct ProjectConfig {
     pub postgres: PostgresConfig,
     pub turbopuffer: TurbopufferConfig,
-    pub state: StateConfig,
+    /// Optional embedding providers configuration.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub providers: ProvidersConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,9 +29,25 @@ pub struct TurbopufferConfig {
     pub api_key: String,
 }
 
+/// Configuration for external providers (embeddings, etc.)
+#[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
+pub struct ProvidersConfig {
+    /// Embedding provider configuration.
+    pub embeddings: Option<EmbeddingProviderConfig>,
+}
+
+/// Embedding provider configuration.
 #[derive(Debug, Deserialize)]
-pub struct StateConfig {
-    pub path: String,
+#[allow(dead_code)]
+pub struct EmbeddingProviderConfig {
+    /// Provider type: "together", "openai", etc.
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    /// Model name.
+    pub model: String,
+    /// API key (supports ${ENV_VAR} syntax).
+    pub api_key: String,
 }
 
 impl ProjectConfig {
@@ -93,6 +113,41 @@ impl ProjectConfig {
 
         Ok(mappings)
     }
+
+    /// Load all local migration files with their content for hashing.
+    pub fn load_local_migrations(&self) -> Result<Vec<LocalMigration>> {
+        let migrations_dir = Path::new("puffgres/migrations");
+
+        if !migrations_dir.exists() {
+            return Ok(vec![]);
+        }
+
+        let mut migrations = Vec::new();
+
+        for entry in fs::read_dir(migrations_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().map_or(false, |ext| ext == "toml") {
+                let content = fs::read_to_string(&path)
+                    .with_context(|| format!("Failed to read migration: {}", path.display()))?;
+
+                let config = MigrationConfig::parse(&content)
+                    .with_context(|| format!("Failed to parse migration: {}", path.display()))?;
+
+                migrations.push(LocalMigration {
+                    version: config.version as i32,
+                    mapping_name: config.mapping_name.clone(),
+                    content,
+                });
+            }
+        }
+
+        // Sort by version
+        migrations.sort_by_key(|m| m.version);
+
+        Ok(migrations)
+    }
 }
 
 #[cfg(test)]
@@ -110,9 +165,7 @@ mod tests {
             turbopuffer: TurbopufferConfig {
                 api_key: "key".to_string(),
             },
-            state: StateConfig {
-                path: "state.db".to_string(),
-            },
+            providers: ProvidersConfig::default(),
         };
 
         assert_eq!(config.resolve_env("${TEST_VAR}"), "hello");

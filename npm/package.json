@@ -1,0 +1,62 @@
+{
+  "name": "puffgres",
+  "version": "0.1.0",
+  "description": "CDC pipeline mirroring Postgres to turbopuffer",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "puffgres": "./dist/cli.js",
+    "puffgres-transform": "./dist/transform-executor.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:native": "cd native && cargo build --release && node ../scripts/copy-native.js",
+    "build:all": "npm run build && npm run build:native",
+    "clean": "rm -rf dist native/target",
+    "prepublishOnly": "npm run build",
+    "test": "node --test dist/**/*.test.js",
+    "test:e2e": "node --test --loader tsx tests/e2e/*.test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucasgelfond/puffgres.git"
+  },
+  "keywords": [
+    "postgres",
+    "turbopuffer",
+    "cdc",
+    "replication",
+    "vector",
+    "embeddings",
+    "sync"
+  ],
+  "author": "Lucas Gelfond",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "types",
+    "native/*.node",
+    "native/prebuilds",
+    "scripts",
+    "docs"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "tsx": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.0.0",
+    "pg": "^8.0.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,94 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: puffgres_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build Rust
+        run: cargo build --release
+
+      - name: Install npm dependencies
+        working-directory: npm
+        run: pnpm install
+
+      - name: Build npm package
+        working-directory: npm
+        run: pnpm run build
+
+      - name: Configure Postgres for logical replication
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d puffgres_test -c "ALTER SYSTEM SET wal_level = logical;"
+          docker restart ${{ job.services.postgres.id }}
+          sleep 5
+          # Wait for postgres to be ready again
+          for i in {1..30}; do
+            if PGPASSWORD=postgres pg_isready -h localhost -U postgres; then
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run E2E tests
+        working-directory: npm
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/puffgres_test
+          TURBOPUFFER_API_KEY: ${{ secrets.TURBOPUFFER_API_KEY }}
+        run: |
+          # Skip if no turbopuffer key (PR from fork)
+          if [ -z "$TURBOPUFFER_API_KEY" ]; then
+            echo "Skipping E2E tests (no TURBOPUFFER_API_KEY)"
+            exit 0
+          fi
+          pnpm run test:e2e
+
+      - name: Run Rust tests
+        run: cargo test
