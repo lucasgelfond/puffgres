@@ -112,7 +112,7 @@ async fn run_streaming_loop(
     poll_interval: Duration,
 ) -> Result<()> {
     // State is stored in Postgres __puffgres_* tables
-    let state_store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let state_store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to state store")?;
 
@@ -128,7 +128,7 @@ async fn run_streaming_loop(
 
     // Initialize streaming replicator
     let streaming_config = StreamingConfig {
-        connection_string: config.postgres_connection_string(),
+        connection_string: config.postgres_connection_string()?,
         slot_name: slot.to_string(),
         create_slot,
         start_lsn,
@@ -146,7 +146,7 @@ async fn run_streaming_loop(
         replicator.resume_from(lsn);
     }
 
-    let tp_client = rs_puff::Client::new(config.turbopuffer_api_key());
+    let tp_client = rs_puff::Client::new(config.turbopuffer_api_key()?);
     let router = Router::new(mappings.clone());
 
     let transformers: Vec<_> = mappings
@@ -278,7 +278,7 @@ async fn run_polling_loop(
     poll_interval: Duration,
 ) -> Result<()> {
     let pg_config = PollerConfig {
-        connection_string: config.postgres_connection_string(),
+        connection_string: config.postgres_connection_string()?,
         slot_name: slot.to_string(),
         create_slot,
         max_changes: 1000,
@@ -288,11 +288,11 @@ async fn run_polling_loop(
         .await
         .context("Failed to connect to Postgres")?;
 
-    let state_store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let state_store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to state store")?;
 
-    let tp_client = rs_puff::Client::new(config.turbopuffer_api_key());
+    let tp_client = rs_puff::Client::new(config.turbopuffer_api_key()?);
     let router = Router::new(mappings.clone());
 
     let transformers: Vec<_> = mappings

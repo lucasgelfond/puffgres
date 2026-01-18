@@ -22,6 +22,9 @@ pub enum PgError {
 
     #[error("invalid LSN format: {0}")]
     InvalidLsn(String),
+
+    #[error("table '{schema}.{table}' does not exist in the database")]
+    TableNotFound { schema: String, table: String },
 }
 
 impl From<tokio_postgres::Error> for PgError {

@@ -34,7 +34,7 @@ pub async fn run_backfill(
     );
 
     // Connect to state store
-    let state_store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let state_store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to state store")?;
 
@@ -49,7 +49,7 @@ pub async fn run_backfill(
 
     // Configure backfill scanner
     let backfill_config = BackfillConfig {
-        connection_string: config.postgres_connection_string(),
+        connection_string: config.postgres_connection_string()?,
         schema: mapping.source.schema.clone(),
         table: mapping.source.table.clone(),
         id_column: mapping.id.column.clone(),
@@ -74,7 +74,7 @@ pub async fn run_backfill(
     }
 
     // Initialize turbopuffer client
-    let tp_client = rs_puff::Client::new(config.turbopuffer_api_key());
+    let tp_client = rs_puff::Client::new(config.turbopuffer_api_key()?);
 
     // Create transformer
     let transformer = IdentityTransformer::new(mapping.columns.clone());

@@ -764,6 +764,39 @@ impl PostgresStateStore {
     }
 
     // -------------------------------------------------------------------------
+    // Table validation methods
+    // -------------------------------------------------------------------------
+
+    /// Check if a table exists in the database.
+    pub async fn table_exists(&self, schema: &str, table: &str) -> PgResult<bool> {
+        let row = self
+            .client
+            .query_opt(
+                r#"
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = $1 AND table_name = $2
+                "#,
+                &[&schema, &table],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        Ok(row.is_some())
+    }
+
+    /// Validate that a table exists, returning an error with a helpful message if not.
+    pub async fn validate_table_exists(&self, schema: &str, table: &str) -> PgResult<()> {
+        if !self.table_exists(schema, table).await? {
+            return Err(PgError::TableNotFound {
+                schema: schema.to_string(),
+                table: table.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
     // Cleanup methods
     // -------------------------------------------------------------------------
 

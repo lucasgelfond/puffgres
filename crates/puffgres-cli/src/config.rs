@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use puffgres_config::MigrationConfig;
@@ -75,13 +75,64 @@ impl ProjectConfig {
     }
 
     /// Get the resolved Postgres connection string.
-    pub fn postgres_connection_string(&self) -> String {
-        self.resolve_env(&self.postgres.connection_string)
+    /// Returns an error if required environment variables are not set.
+    pub fn postgres_connection_string(&self) -> Result<String> {
+        self.resolve_env_required(&self.postgres.connection_string, "DATABASE_URL")
     }
 
     /// Get the resolved Turbopuffer API key.
-    pub fn turbopuffer_api_key(&self) -> String {
-        self.resolve_env(&self.turbopuffer.api_key)
+    /// Returns an error if required environment variables are not set.
+    pub fn turbopuffer_api_key(&self) -> Result<String> {
+        self.resolve_env_required(&self.turbopuffer.api_key, "TURBOPUFFER_API_KEY")
+    }
+
+    /// Resolve environment variables in a string, returning an error if any are missing.
+    fn resolve_env_required(&self, s: &str, hint_var: &str) -> Result<String> {
+        let mut result = s.to_string();
+        let mut missing_vars = Vec::new();
+
+        // Find all ${...} patterns
+        while let Some(start) = result.find("${") {
+            if let Some(end) = result[start..].find('}') {
+                let var_name = &result[start + 2..start + end];
+                match std::env::var(var_name) {
+                    Ok(value) if !value.is_empty() => {
+                        result = format!("{}{}{}", &result[..start], value, &result[start + end + 1..]);
+                    }
+                    _ => {
+                        missing_vars.push(var_name.to_string());
+                        // Replace with empty to continue parsing other vars
+                        result = format!("{}{}", &result[..start], &result[start + end + 1..]);
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        if !missing_vars.is_empty() {
+            bail!(
+                "Missing required environment variable: {}\n\n\
+                 Make sure {} is set in your .env file or environment.\n\
+                 Example: {}=postgresql://user:password@localhost:5432/database",
+                missing_vars.join(", "),
+                hint_var,
+                hint_var
+            );
+        }
+
+        if result.is_empty() {
+            bail!(
+                "Environment variable {} is empty.\n\n\
+                 Make sure {} is set to a valid value in your .env file or environment.\n\
+                 Example: {}=postgresql://user:password@localhost:5432/database",
+                hint_var,
+                hint_var,
+                hint_var
+            );
+        }
+
+        Ok(result)
     }
 
     /// Get the resolved base namespace prefix, if configured.

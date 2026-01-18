@@ -6,16 +6,18 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use dialoguer::{Confirm, Input};
+use dialoguer::Input;
 use tracing::info;
 
 mod backfill;
 mod config;
 mod dlq;
 mod runner;
+mod validation;
 
 use config::ProjectConfig;
 use puffgres_pg::{MigrationTracker, PostgresStateStore};
+use validation::{store_transform, validate_no_unreferenced_transforms, validate_transforms};
 
 #[derive(Parser)]
 #[command(name = "puffgres")]
@@ -32,8 +34,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize puffgres in the current directory
+    /// Initialize puffgres in the current directory (creates config files)
     Init,
+
+    /// Set up database tables and replication slot
+    Setup,
 
     /// Create a new migration
     New {
@@ -159,6 +164,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => cmd_init().await,
+        Commands::Setup => {
+            let config = load_config(&cli.config)?;
+            cmd_setup(config).await
+        }
         Commands::New { name } => cmd_new(name).await,
         Commands::Migrate { dry_run } => {
             let config = load_config(&cli.config)?;
@@ -387,53 +396,43 @@ export default async function transform(
         println!("Created .gitignore with .env");
     }
 
-    println!();
-
-    // Now prompt about creating the database tables
-    println!("Puffgres will create the following tables in your Postgres database:");
-    println!("  • __puffgres_migrations  - tracks applied migrations");
-    println!("  • __puffgres_checkpoints - stores CDC replication state");
-    println!("  • __puffgres_dlq         - dead letter queue for failed events");
-    println!("  • __puffgres_backfill    - tracks backfill progress");
-    println!("  • __puffgres_transforms  - stores versioned transform code");
-    println!();
-
-    let create_tables = Confirm::new()
-        .with_prompt("Do you want to create these tables now?")
-        .default(true)
-        .interact()?;
-
-    if create_tables {
-        // Load the config and connect to database
-        let config_content = fs::read_to_string("puffgres.toml")?;
-        let config: ProjectConfig = toml::from_str(&config_content)
-            .context("Failed to parse puffgres.toml - make sure you've filled in your .env file")?;
-
-        // Connect and create tables
-        match PostgresStateStore::connect(&config.postgres_connection_string()).await {
-            Ok(_store) => {
-                println!("{}", "✓ Database tables created successfully!".green());
-            }
-            Err(e) => {
-                println!(
-                    "{}",
-                    format!("✗ Failed to connect to database: {}", e).red()
-                );
-                println!("  Make sure your DATABASE_URL in .env is correct.");
-                println!("  You can run 'puffgres migrate' later to create the tables.");
-            }
-        }
-    } else {
-        println!("Tables will be created automatically when you run 'puffgres migrate'.");
-    }
-
     println!("\n{}", "Puffgres initialized!".green().bold());
     println!("\nNext steps:");
     println!("  1. Fill in your credentials in .env");
-    println!("  2. Edit puffgres/migrations/0001_{}.toml for your table", safe_name);
-    println!("  3. Run: puffgres migrate");
-    println!("  4. Run: puffgres backfill {}_public", safe_name);
-    println!("  5. Run: puffgres run\n");
+    println!(
+        "  2. Edit puffgres/migrations/0001_{}.toml for your table",
+        safe_name
+    );
+    println!("  3. Run: puffgres setup");
+    println!("  4. Run: puffgres migrate");
+    println!("  5. Run: puffgres backfill {}_public", safe_name);
+    println!("  6. Run: puffgres run\n");
+
+    Ok(())
+}
+
+async fn cmd_setup(config: ProjectConfig) -> Result<()> {
+    println!("Setting up puffgres database tables...\n");
+
+    println!("The following tables will be created:");
+    println!("  - __puffgres_migrations  - tracks applied migrations");
+    println!("  - __puffgres_checkpoints - stores CDC replication state");
+    println!("  - __puffgres_dlq         - dead letter queue for failed events");
+    println!("  - __puffgres_backfill    - tracks backfill progress");
+    println!("  - __puffgres_transforms  - stores versioned transform code");
+    println!("  - __puffgres_migration_content - stores migration content");
+    println!();
+
+    // Connect to Postgres - this auto-creates the tables
+    let _store = PostgresStateStore::connect(&config.postgres_connection_string()?)
+        .await
+        .context("Failed to connect to Postgres")?;
+
+    println!("{}", "Database tables created successfully!".green());
+    println!("\nNext steps:");
+    println!("  1. Run: puffgres migrate");
+    println!("  2. Run: puffgres backfill <mapping_name>");
+    println!("  3. Run: puffgres run\n");
 
     Ok(())
 }
@@ -565,7 +564,7 @@ async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
     info!("Checking migrations");
 
     // Connect to Postgres state store
-    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to Postgres")?;
 
@@ -574,6 +573,37 @@ async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
     if local.is_empty() {
         println!("No migrations found in puffgres/migrations/");
         return Ok(());
+    }
+
+    // Check for unreferenced transforms in the transforms directory
+    if let Err(e) = validate_no_unreferenced_transforms(&local) {
+        eprintln!("{}", format!("Error: {}", e).red());
+        std::process::exit(1);
+    }
+
+    // Validate that all referenced tables exist before proceeding
+    for migration in &local {
+        let migration_config = puffgres_config::MigrationConfig::parse(&migration.content)
+            .with_context(|| format!("Failed to parse migration v{} '{}'", migration.version, migration.mapping_name))?;
+
+        let schema = &migration_config.source.schema;
+        let table = &migration_config.source.table;
+
+        if !store.table_exists(schema, table).await? {
+            eprintln!(
+                "{}",
+                format!(
+                    "Error: Table '{}.{}' referenced in migration v{} '{}' does not exist.",
+                    schema, table, migration.version, migration.mapping_name
+                )
+                .red()
+            );
+            eprintln!(
+                "{}",
+                "Create the table in your database before applying this migration.".yellow()
+            );
+            std::process::exit(1);
+        }
     }
 
     // First validate transforms are not modified
@@ -673,7 +703,7 @@ async fn cmd_run(
     info!("Starting puffgres CDC replication");
 
     // Connect to Postgres state store (this auto-creates __puffgres_* tables if they don't exist)
-    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to Postgres")?;
 
@@ -681,6 +711,31 @@ async fn cmd_run(
     let local = config.load_local_migrations()?;
     if local.is_empty() {
         anyhow::bail!("No migrations found in puffgres/migrations/");
+    }
+
+    // Validate that all referenced tables exist before proceeding
+    for migration in &local {
+        let migration_config = puffgres_config::MigrationConfig::parse(&migration.content)
+            .with_context(|| format!("Failed to parse migration v{} '{}'", migration.version, migration.mapping_name))?;
+
+        let schema = &migration_config.source.schema;
+        let table = &migration_config.source.table;
+
+        if !store.table_exists(schema, table).await? {
+            eprintln!(
+                "{}",
+                format!(
+                    "Error: Table '{}.{}' referenced in migration v{} '{}' does not exist.",
+                    schema, table, migration.version, migration.mapping_name
+                )
+                .red()
+            );
+            eprintln!(
+                "{}",
+                "Create the table in your database before running CDC replication.".yellow()
+            );
+            std::process::exit(1);
+        }
     }
 
     // Validate transforms haven't been modified
@@ -768,7 +823,7 @@ async fn cmd_run(
 
 async fn cmd_status(config: ProjectConfig) -> Result<()> {
     // Connect to Postgres state store
-    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to Postgres")?;
 
@@ -801,7 +856,7 @@ async fn cmd_backfill(
     resume: bool,
 ) -> Result<()> {
     // Connect to Postgres state store
-    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to Postgres")?;
 
@@ -824,12 +879,32 @@ async fn cmd_backfill(
         .find(|m| m.name == mapping_name)
         .context(format!("Mapping '{}' not found", mapping_name))?;
 
+    // Validate that the table exists before backfilling
+    let schema = &mapping.source.schema;
+    let table = &mapping.source.table;
+
+    if !store.table_exists(schema, table).await? {
+        eprintln!(
+            "{}",
+            format!(
+                "Error: Table '{}.{}' referenced in mapping '{}' does not exist.",
+                schema, table, mapping_name
+            )
+            .red()
+        );
+        eprintln!(
+            "{}",
+            "Create the table in your database before running backfill.".yellow()
+        );
+        std::process::exit(1);
+    }
+
     backfill::run_backfill(&config, mapping, batch_size, resume).await
 }
 
 async fn cmd_dlq(config: ProjectConfig, command: DlqCommands) -> Result<()> {
     // Connect to Postgres state store
-    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to Postgres")?;
 
@@ -851,7 +926,7 @@ async fn cmd_reset(config: ProjectConfig) -> Result<()> {
     println!("Resetting local config from database state...\n");
 
     // Connect to Postgres state store
-    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to Postgres")?;
 
@@ -964,7 +1039,7 @@ async fn cmd_dangerously_delete_config(config: ProjectConfig) -> Result<()> {
     println!("\nDeleting puffgres configuration...");
 
     // Connect to Postgres and drop tables
-    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to Postgres")?;
 
@@ -1021,7 +1096,7 @@ async fn cmd_dangerously_reset_turbopuffer(config: ProjectConfig) -> Result<()> 
     println!("\nDeleting turbopuffer namespaces...");
 
     // Create turbopuffer client
-    let client = rs_puff::Client::new(config.turbopuffer_api_key());
+    let client = rs_puff::Client::new(config.turbopuffer_api_key()?);
 
     for ns in unique_namespaces {
         match client.namespace(ns).delete_all().await {
@@ -1031,7 +1106,7 @@ async fn cmd_dangerously_reset_turbopuffer(config: ProjectConfig) -> Result<()> 
     }
 
     // Also clear backfill progress
-    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+    let store = PostgresStateStore::connect(&config.postgres_connection_string()?)
         .await
         .context("Failed to connect to Postgres")?;
 
@@ -1050,78 +1125,8 @@ async fn cmd_dangerously_reset_turbopuffer(config: ProjectConfig) -> Result<()> 
 }
 
 // -------------------------------------------------------------------------
-// Helper functions for transforms and database operations
+// Helper functions for database operations
 // -------------------------------------------------------------------------
-
-/// Store a transform in the database for immutability tracking
-async fn store_transform(
-    store: &PostgresStateStore,
-    mapping_name: &str,
-    version: i32,
-    content: &str,
-) -> Result<()> {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(content);
-    let hash = hex::encode(hasher.finalize());
-
-    store
-        .store_transform(mapping_name, version, content, &hash)
-        .await
-        .context("Failed to store transform")?;
-
-    Ok(())
-}
-
-/// Validate that local transforms match what's stored in the database
-async fn validate_transforms(_config: &ProjectConfig, store: &PostgresStateStore) -> Result<()> {
-    use sha2::{Digest, Sha256};
-
-    // Get stored transforms from database
-    let stored = store.get_all_transforms().await?;
-
-    if stored.is_empty() {
-        return Ok(());
-    }
-
-    // Check each stored transform against local files
-    for transform in stored {
-        let path = format!(
-            "puffgres/transforms/{}_{}.ts",
-            transform.mapping_name, transform.version
-        );
-
-        // Also check the simpler path format
-        let alt_path = format!("puffgres/transforms/{}.ts", transform.mapping_name);
-
-        let local_content = if Path::new(&path).exists() {
-            Some(fs::read_to_string(&path)?)
-        } else if Path::new(&alt_path).exists() {
-            Some(fs::read_to_string(&alt_path)?)
-        } else {
-            None
-        };
-
-        if let Some(content) = local_content {
-            let mut hasher = Sha256::new();
-            hasher.update(&content);
-            let local_hash = hex::encode(hasher.finalize());
-
-            if local_hash != transform.content_hash {
-                anyhow::bail!(
-                    "Transform for '{}' v{} has been modified.\n  Expected hash: {}\n  Got hash: {}",
-                    transform.mapping_name,
-                    transform.version,
-                    transform.content_hash,
-                    local_hash
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
 
 /// Drop all puffgres tables from the database
 async fn drop_all_puffgres_tables(store: &PostgresStateStore) -> Result<()> {

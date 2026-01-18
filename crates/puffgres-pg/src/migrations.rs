@@ -50,11 +50,11 @@ pub struct LocalMigration {
 
 impl LocalMigration {
     /// Compute the content hash (SHA-256).
+    ///
+    /// Line endings are normalized to LF before hashing to ensure consistent
+    /// hashes across different platforms (Windows CRLF vs Unix LF).
     pub fn content_hash(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(&self.content);
-        let result = hasher.finalize();
-        hex::encode(result)
+        compute_content_hash(&self.content)
     }
 }
 
@@ -232,9 +232,14 @@ impl<'a> MigrationTracker<'a> {
 }
 
 /// Compute content hash for a migration TOML string.
+///
+/// Line endings are normalized to LF before hashing to ensure consistent
+/// hashes across different platforms (Windows CRLF vs Unix LF).
 pub fn compute_content_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(content);
+    // Normalize CRLF to LF for consistent hashing across platforms
+    let normalized = content.replace("\r\n", "\n");
+    hasher.update(&normalized);
     let result = hasher.finalize();
     hex::encode(result)
 }
@@ -285,5 +290,54 @@ mod tests {
     fn test_compute_content_hash() {
         let hash = compute_content_hash("test content");
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn test_content_hash_normalizes_line_endings() {
+        // LF line endings (Unix)
+        let lf_content = "version = 1\nmapping_name = \"users\"\n[source]\ntable = \"users\"\n";
+
+        // CRLF line endings (Windows)
+        let crlf_content =
+            "version = 1\r\nmapping_name = \"users\"\r\n[source]\r\ntable = \"users\"\r\n";
+
+        let lf_migration = LocalMigration {
+            version: 1,
+            mapping_name: "users".to_string(),
+            content: lf_content.to_string(),
+        };
+
+        let crlf_migration = LocalMigration {
+            version: 1,
+            mapping_name: "users".to_string(),
+            content: crlf_content.to_string(),
+        };
+
+        // Both should produce the same hash after normalization
+        assert_eq!(
+            lf_migration.content_hash(),
+            crlf_migration.content_hash(),
+            "CRLF and LF line endings should produce the same hash"
+        );
+
+        // Also test the standalone function
+        assert_eq!(
+            compute_content_hash(lf_content),
+            compute_content_hash(crlf_content),
+            "compute_content_hash should normalize line endings"
+        );
+    }
+
+    #[test]
+    fn test_content_hash_mixed_line_endings() {
+        // Mixed line endings (some files may have inconsistent line endings)
+        let mixed_content = "line1\r\nline2\nline3\r\nline4\n";
+        let normalized_content = "line1\nline2\nline3\nline4\n";
+
+        assert_eq!(
+            compute_content_hash(mixed_content),
+            compute_content_hash(normalized_content),
+            "Mixed line endings should normalize to LF"
+        );
     }
 }

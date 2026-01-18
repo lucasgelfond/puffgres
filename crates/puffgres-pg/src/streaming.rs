@@ -173,14 +173,15 @@ impl StreamingReplicator {
     /// Returns a batch with events and the LSN to acknowledge.
     pub async fn poll_batch(&mut self, max_changes: u32) -> PgResult<StreamingBatch> {
         // Use peek to get changes without confirming
-        let start_lsn = format_lsn(self.current_lsn);
-
+        // Pass NULL for upto_lsn to get all available changes from the slot's confirmed_flush_lsn
+        // The slot remembers its position and returns changes from confirmed_flush_lsn onwards
         let query = format!(
-            "SELECT lsn::text, xid::text, data FROM pg_logical_slot_peek_changes('{}', '{}', {}, 'format-version', '2', 'include-lsn', 'true')",
+            "SELECT lsn::text, xid::text, data FROM pg_logical_slot_peek_changes('{}', NULL, {}, 'format-version', '2', 'include-lsn', 'true')",
             self.config.slot_name,
-            start_lsn,
             max_changes
         );
+
+        debug!(slot = %self.config.slot_name, max_changes, "Polling for changes");
 
         let rows = self.client.query(&query, &[]).await?;
 
@@ -201,7 +202,18 @@ impl StreamingReplicator {
 
             // Parse wal2json v2 output
             match parse_wal2json_v2(&data, lsn) {
-                Ok(mut parsed) => events.append(&mut parsed),
+                Ok(mut parsed) => {
+                    for event in &parsed {
+                        info!(
+                            lsn = %lsn_str,
+                            op = ?event.op,
+                            schema = %event.schema,
+                            table = %event.table,
+                            "Received change from stream"
+                        );
+                    }
+                    events.append(&mut parsed);
+                }
                 Err(e) => {
                     warn!(lsn = %lsn_str, error = %e, "Failed to parse wal2json output");
                 }
@@ -209,7 +221,11 @@ impl StreamingReplicator {
         }
 
         if !events.is_empty() {
-            debug!(count = events.len(), max_lsn, "Polled batch");
+            info!(
+                count = events.len(),
+                max_lsn = format_lsn(max_lsn),
+                "Polled batch with changes"
+            );
         }
 
         Ok(StreamingBatch {
@@ -224,10 +240,22 @@ impl StreamingReplicator {
     /// reclaim WAL space.
     pub async fn acknowledge(&mut self, lsn: u64) -> PgResult<()> {
         if lsn <= self.ack_lsn {
+            debug!(
+                lsn = format_lsn(lsn),
+                ack_lsn = format_lsn(self.ack_lsn),
+                "Skipping acknowledge - already acknowledged"
+            );
             return Ok(()); // Already acknowledged
         }
 
         let lsn_str = format_lsn(lsn);
+
+        info!(
+            slot = %self.config.slot_name,
+            lsn = %lsn_str,
+            prev_ack = format_lsn(self.ack_lsn),
+            "Acknowledging changes"
+        );
 
         // Use pg_logical_slot_get_changes to consume up to this LSN
         // This is atomic - changes are only removed after we receive them
@@ -242,7 +270,7 @@ impl StreamingReplicator {
         self.ack_lsn = lsn;
         self.current_lsn = lsn;
 
-        debug!(lsn = lsn_str, "Acknowledged LSN");
+        info!(lsn = %lsn_str, "Successfully acknowledged LSN");
 
         Ok(())
     }
