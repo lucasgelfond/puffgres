@@ -22,6 +22,29 @@ pub struct Mapping {
     pub batching: BatchConfig,
     /// Versioning mode for anti-regression.
     pub versioning: VersioningMode,
+    /// Transform configuration (optional).
+    pub transform: Option<TransformConfig>,
+}
+
+/// Transform configuration.
+#[derive(Debug, Clone, Default)]
+pub struct TransformConfig {
+    /// Transform type.
+    pub transform_type: TransformType,
+    /// Path to the transform file (for JS/TS transforms).
+    pub path: Option<String>,
+    /// Entry function name (defaults to "default").
+    pub entry: Option<String>,
+}
+
+/// Transform type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransformType {
+    /// Identity transform (selected columns only).
+    #[default]
+    Identity,
+    /// JavaScript/TypeScript transform.
+    Js,
 }
 
 /// Source relation (table or view).
@@ -122,6 +145,7 @@ pub struct MappingBuilder {
     membership: MembershipConfig,
     batching: BatchConfig,
     versioning: VersioningMode,
+    transform: Option<TransformConfig>,
 }
 
 impl MappingBuilder {
@@ -136,6 +160,7 @@ impl MappingBuilder {
             membership: MembershipConfig::All,
             batching: BatchConfig::default(),
             versioning: VersioningMode::default(),
+            transform: None,
         }
     }
 
@@ -187,6 +212,11 @@ impl MappingBuilder {
         self
     }
 
+    pub fn transform(mut self, config: TransformConfig) -> Self {
+        self.transform = Some(config);
+        self
+    }
+
     pub fn build(self) -> crate::Result<Mapping> {
         let namespace = self
             .namespace
@@ -208,6 +238,7 @@ impl MappingBuilder {
             membership: self.membership,
             batching: self.batching,
             versioning: self.versioning,
+            transform: self.transform,
         })
     }
 }

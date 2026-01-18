@@ -1,7 +1,7 @@
 use puffgres_core::Predicate;
 
 use crate::error::{ConfigError, ConfigResult};
-use crate::migration::{MembershipMode, MigrationConfig, VersioningMode};
+use crate::migration::{MembershipMode, MigrationConfig, TransformType, VersioningMode};
 
 /// Validate a migration configuration.
 /// Returns a list of validation errors (empty if valid).
@@ -84,7 +84,24 @@ pub fn to_mapping(config: &MigrationConfig) -> ConfigResult<puffgres_core::Mappi
         VersioningMode::None => puffgres_core::VersioningMode::None,
     };
 
-    let mapping = puffgres_core::Mapping::builder(&config.mapping_name)
+    // Build transform config if present
+    let transform = if config.transform.transform_type != TransformType::Identity
+        || config.transform.path.is_some()
+    {
+        Some(puffgres_core::TransformConfig {
+            transform_type: match config.transform.transform_type {
+                TransformType::Identity => puffgres_core::TransformType::Identity,
+                TransformType::Js => puffgres_core::TransformType::Js,
+                TransformType::Rust => puffgres_core::TransformType::Js, // Treat Rust as JS for now
+            },
+            path: config.transform.path.clone(),
+            entry: config.transform.entry.clone(),
+        })
+    } else {
+        None
+    };
+
+    let mut builder = puffgres_core::Mapping::builder(&config.mapping_name)
         .version(config.version as u32)
         .namespace(&config.namespace)
         .source(&config.source.schema, &config.source.table)
@@ -96,11 +113,15 @@ pub fn to_mapping(config: &MigrationConfig) -> ConfigResult<puffgres_core::Mappi
             max_bytes: config.batching.batch_max_bytes,
             flush_interval_ms: config.batching.flush_interval_ms,
         })
-        .versioning(versioning)
-        .build()
-        .map_err(|e| ConfigError::MissingField {
-            field: e.to_string(),
-        })?;
+        .versioning(versioning);
+
+    if let Some(t) = transform {
+        builder = builder.transform(t);
+    }
+
+    let mapping = builder.build().map_err(|e| ConfigError::MissingField {
+        field: e.to_string(),
+    })?;
 
     Ok(mapping)
 }

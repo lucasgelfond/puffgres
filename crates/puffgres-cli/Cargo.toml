@@ -21,5 +21,4 @@ tracing-subscriber = { workspace = true }
 puffgres-core = { workspace = true }
 puffgres-config = { workspace = true }
 puffgres-pg = { workspace = true }
-puffgres-state = { workspace = true }
 rs-puff = { workspace = true }

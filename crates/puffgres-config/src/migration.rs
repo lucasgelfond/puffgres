@@ -1,9 +1,9 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::ConfigResult;
 
 /// Raw migration configuration as parsed from TOML.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MigrationConfig {
     /// Version number (monotonically increasing).
     pub version: i64,
@@ -41,7 +41,7 @@ impl MigrationConfig {
 }
 
 /// Source relation configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SourceConfig {
     /// Schema name (e.g., "public").
     pub schema: String,
@@ -51,7 +51,7 @@ pub struct SourceConfig {
 }
 
 /// ID column configuration (raw from TOML).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct IdConfig {
     /// Column name.
     pub column: String,
@@ -61,7 +61,7 @@ pub struct IdConfig {
 }
 
 /// ID type configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IdTypeConfig {
     Uint,
@@ -82,7 +82,7 @@ impl IdTypeConfig {
 }
 
 /// Membership configuration.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct MembershipConfig {
     /// Membership mode.
     #[serde(default)]
@@ -92,7 +92,7 @@ pub struct MembershipConfig {
 }
 
 /// Membership mode.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MembershipMode {
     /// Evaluate a DSL predicate against row data.
@@ -107,7 +107,7 @@ pub enum MembershipMode {
 }
 
 /// Transform configuration.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct TransformConfig {
     /// Transform type.
     #[serde(rename = "type", default)]
@@ -119,7 +119,7 @@ pub struct TransformConfig {
 }
 
 /// Transform type.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransformType {
     /// Identity transform (selected columns only).
@@ -132,7 +132,7 @@ pub enum TransformType {
 }
 
 /// Batching configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BatchingConfig {
     /// Maximum rows per batch.
     #[serde(default = "default_max_rows")]
@@ -168,7 +168,7 @@ fn default_flush_interval() -> u64 {
 }
 
 /// Versioning configuration.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct VersioningConfig {
     /// Versioning mode.
     #[serde(default)]
@@ -178,7 +178,7 @@ pub struct VersioningConfig {
 }
 
 /// Versioning mode.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VersioningMode {
     /// Use source LSN for versioning.

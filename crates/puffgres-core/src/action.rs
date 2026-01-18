@@ -81,6 +81,7 @@ impl From<&str> for DocumentId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
+    // Permanent errors - will not succeed on retry
     /// Missing required column in the row.
     MissingColumn,
     /// Invalid data type for a column.
@@ -89,8 +90,98 @@ pub enum ErrorKind {
     TransformFailed,
     /// Membership predicate evaluation failed.
     PredicateFailed,
+    /// Schema error (e.g., column doesn't exist).
+    SchemaError,
+    /// Invalid data that cannot be serialized.
+    InvalidData,
+
+    // Retryable errors - may succeed on retry
+    /// Network error (connection failed, timeout).
+    NetworkError,
+    /// Rate limit exceeded.
+    RateLimited,
+    /// Service temporarily unavailable.
+    ServiceUnavailable,
+    /// Timeout waiting for response.
+    Timeout,
+
     /// Generic/unknown error.
     Unknown,
+}
+
+impl ErrorKind {
+    /// Check if this error kind is retryable.
+    ///
+    /// Retryable errors are transient issues that may succeed on retry:
+    /// - Network errors
+    /// - Rate limits
+    /// - Timeouts
+    /// - Service unavailability
+    ///
+    /// Permanent errors should not be retried:
+    /// - Schema errors
+    /// - Transform errors
+    /// - Invalid data
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            ErrorKind::NetworkError
+                | ErrorKind::RateLimited
+                | ErrorKind::ServiceUnavailable
+                | ErrorKind::Timeout
+        )
+    }
+
+    /// Get a human-readable description of this error kind.
+    pub fn description(&self) -> &'static str {
+        match self {
+            ErrorKind::MissingColumn => "Missing column",
+            ErrorKind::InvalidType => "Invalid type",
+            ErrorKind::TransformFailed => "Transform failed",
+            ErrorKind::PredicateFailed => "Predicate failed",
+            ErrorKind::SchemaError => "Schema error",
+            ErrorKind::InvalidData => "Invalid data",
+            ErrorKind::NetworkError => "Network error",
+            ErrorKind::RateLimited => "Rate limited",
+            ErrorKind::ServiceUnavailable => "Service unavailable",
+            ErrorKind::Timeout => "Timeout",
+            ErrorKind::Unknown => "Unknown error",
+        }
+    }
+
+    /// Convert from string (for deserialization from DLQ).
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "missing_column" => ErrorKind::MissingColumn,
+            "invalid_type" => ErrorKind::InvalidType,
+            "transform_failed" => ErrorKind::TransformFailed,
+            "predicate_failed" => ErrorKind::PredicateFailed,
+            "schema_error" => ErrorKind::SchemaError,
+            "invalid_data" => ErrorKind::InvalidData,
+            "network_error" => ErrorKind::NetworkError,
+            "rate_limited" => ErrorKind::RateLimited,
+            "service_unavailable" => ErrorKind::ServiceUnavailable,
+            "timeout" => ErrorKind::Timeout,
+            _ => ErrorKind::Unknown,
+        }
+    }
+
+    /// Convert to string (for serialization to DLQ).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ErrorKind::MissingColumn => "missing_column",
+            ErrorKind::InvalidType => "invalid_type",
+            ErrorKind::TransformFailed => "transform_failed",
+            ErrorKind::PredicateFailed => "predicate_failed",
+            ErrorKind::SchemaError => "schema_error",
+            ErrorKind::InvalidData => "invalid_data",
+            ErrorKind::NetworkError => "network_error",
+            ErrorKind::RateLimited => "rate_limited",
+            ErrorKind::ServiceUnavailable => "service_unavailable",
+            ErrorKind::Timeout => "timeout",
+            ErrorKind::Unknown => "unknown",
+        }
+    }
 }
 
 impl Action {
@@ -166,5 +257,40 @@ mod tests {
 
         let id: DocumentId = "abc".into();
         assert!(matches!(id, DocumentId::String(_)));
+    }
+
+    #[test]
+    fn test_error_kind_retryable() {
+        // Permanent errors
+        assert!(!ErrorKind::MissingColumn.is_retryable());
+        assert!(!ErrorKind::InvalidType.is_retryable());
+        assert!(!ErrorKind::TransformFailed.is_retryable());
+        assert!(!ErrorKind::PredicateFailed.is_retryable());
+        assert!(!ErrorKind::SchemaError.is_retryable());
+        assert!(!ErrorKind::InvalidData.is_retryable());
+        assert!(!ErrorKind::Unknown.is_retryable());
+
+        // Retryable errors
+        assert!(ErrorKind::NetworkError.is_retryable());
+        assert!(ErrorKind::RateLimited.is_retryable());
+        assert!(ErrorKind::ServiceUnavailable.is_retryable());
+        assert!(ErrorKind::Timeout.is_retryable());
+    }
+
+    #[test]
+    fn test_error_kind_roundtrip() {
+        let kinds = [
+            ErrorKind::MissingColumn,
+            ErrorKind::InvalidType,
+            ErrorKind::TransformFailed,
+            ErrorKind::NetworkError,
+            ErrorKind::RateLimited,
+        ];
+
+        for kind in kinds {
+            let s = kind.as_str();
+            let parsed = ErrorKind::from_str(s);
+            assert_eq!(kind, parsed);
+        }
     }
 }

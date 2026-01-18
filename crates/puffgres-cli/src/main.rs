@@ -6,10 +6,13 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing::{info, warn};
 
+mod backfill;
 mod config;
+mod dlq;
 mod runner;
 
 use config::ProjectConfig;
+use puffgres_pg::{MigrationTracker, PostgresStateStore};
 
 #[derive(Parser)]
 #[command(name = "puffgres")]
@@ -33,6 +36,13 @@ enum Commands {
         path: PathBuf,
     },
 
+    /// Apply pending migrations
+    Migrate {
+        /// Show what would be applied without actually applying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Start the CDC replication loop
     Run {
         /// Replication slot name
@@ -50,6 +60,68 @@ enum Commands {
 
     /// Show current sync status
     Status,
+
+    /// Backfill existing table data to turbopuffer
+    Backfill {
+        /// Mapping name to backfill
+        mapping: String,
+
+        /// Batch size for processing
+        #[arg(long, default_value = "1000")]
+        batch_size: u32,
+
+        /// Resume from previous checkpoint
+        #[arg(long)]
+        resume: bool,
+    },
+
+    /// Manage the dead letter queue
+    Dlq {
+        #[command(subcommand)]
+        command: DlqCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum DlqCommands {
+    /// List DLQ entries
+    List {
+        /// Filter by mapping name
+        #[arg(long)]
+        mapping: Option<String>,
+
+        /// Maximum number of entries to show
+        #[arg(long, default_value = "50")]
+        limit: i64,
+    },
+
+    /// Show details of a DLQ entry
+    Show {
+        /// Entry ID
+        id: i32,
+    },
+
+    /// Retry DLQ entries
+    Retry {
+        /// Retry a specific entry by ID
+        #[arg(long)]
+        id: Option<i32>,
+
+        /// Retry all entries for a mapping
+        #[arg(long)]
+        mapping: Option<String>,
+    },
+
+    /// Clear DLQ entries
+    Clear {
+        /// Clear entries for a specific mapping
+        #[arg(long)]
+        mapping: Option<String>,
+
+        /// Clear all entries
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[tokio::main]
@@ -69,6 +141,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { path } => cmd_init(&path),
+        Commands::Migrate { dry_run } => {
+            let config = load_config(&cli.config)?;
+            cmd_migrate(config, dry_run).await
+        }
         Commands::Run {
             slot,
             create_slot,
@@ -79,7 +155,19 @@ async fn main() -> Result<()> {
         }
         Commands::Status => {
             let config = load_config(&cli.config)?;
-            cmd_status(config)
+            cmd_status(config).await
+        }
+        Commands::Backfill {
+            mapping,
+            batch_size,
+            resume,
+        } => {
+            let config = load_config(&cli.config)?;
+            cmd_backfill(config, &mapping, batch_size, resume).await
+        }
+        Commands::Dlq { command } => {
+            let config = load_config(&cli.config)?;
+            cmd_dlq(config, command).await
         }
     }
 }
@@ -99,7 +187,7 @@ fn cmd_init(path: &PathBuf) -> Result<()> {
 
     // Create directories
     fs::create_dir_all(path.join("puffgres/migrations"))?;
-    fs::create_dir_all(path.join("puffgres/state"))?;
+    fs::create_dir_all(path.join("puffgres/transforms"))?;
 
     // Create .env.example
     let env_example = r#"# Puffgres environment variables
@@ -110,6 +198,9 @@ DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
 
 # Turbopuffer API key
 TURBOPUFFER_API_KEY=your-api-key-here
+
+# Optional: Together AI for embeddings
+# TOGETHER_API_KEY=your-together-key-here
 "#;
 
     let env_example_path = path.join(".env.example");
@@ -121,6 +212,7 @@ TURBOPUFFER_API_KEY=your-api-key-here
     // Create default config that references env vars
     let config = r#"# Puffgres configuration
 # Secrets are loaded from .env file
+# State is stored in __puffgres_* tables in your Postgres database
 
 [postgres]
 connection_string = "${DATABASE_URL}"
@@ -128,8 +220,11 @@ connection_string = "${DATABASE_URL}"
 [turbopuffer]
 api_key = "${TURBOPUFFER_API_KEY}"
 
-[state]
-path = "puffgres/state/puffgres.db"
+# Optional: Configure embedding providers for transforms
+# [providers.embeddings]
+# type = "together"
+# model = "BAAI/bge-base-en-v1.5"
+# api_key = "${TOGETHER_API_KEY}"
 "#;
 
     let config_path = path.join("puffgres.toml");
@@ -162,6 +257,10 @@ type = "uint"
 
 [versioning]
 mode = "source_lsn"
+
+# Optional: custom transform
+# [transform]
+# path = "./transforms/users.ts"
 "#;
 
     let migration_path = path.join("puffgres/migrations/0001_users.toml");
@@ -170,10 +269,45 @@ mode = "source_lsn"
         info!(path = %migration_path.display(), "Created example migration");
     }
 
+    // Create example transform
+    let transform = r#"// Example transform for users table
+// Uncomment [transform] section in migration to use this
+
+import type { RowEvent, Action, TransformContext } from 'puffgres';
+
+export default async function transform(
+  event: RowEvent,
+  id: string,
+  ctx: TransformContext
+): Promise<Action> {
+  if (event.op === 'delete') {
+    return { type: 'delete', id };
+  }
+
+  const row = event.new!;
+
+  return {
+    type: 'upsert',
+    id,
+    doc: {
+      name: row.name,
+      email: row.email,
+      created_at: row.created_at,
+    },
+  };
+}
+"#;
+
+    let transform_path = path.join("puffgres/transforms/users.ts");
+    if !transform_path.exists() {
+        fs::write(&transform_path, transform)?;
+        info!(path = %transform_path.display(), "Created example transform");
+    }
+
     // Create .gitignore for secrets
     let gitignore = r#"# Puffgres
 .env
-puffgres/state/
+node_modules/
 "#;
 
     let gitignore_path = path.join("puffgres/.gitignore");
@@ -181,12 +315,75 @@ puffgres/state/
         fs::write(&gitignore_path, gitignore)?;
     }
 
-    println!("\n✓ Puffgres project initialized!\n");
+    println!("\nPuffgres project initialized!\n");
     println!("Next steps:");
     println!("  1. Copy .env.example to .env and fill in your credentials");
     println!("  2. Edit puffgres/migrations/0001_users.toml for your table");
-    println!("  3. Run: puffgres run\n");
+    println!("  3. Run: puffgres migrate");
+    println!("  4. Run: puffgres run\n");
 
+    Ok(())
+}
+
+async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
+    info!("Checking migrations");
+
+    // Connect to Postgres state store
+    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+        .await
+        .context("Failed to connect to Postgres")?;
+
+    // Load local migrations
+    let local = config.load_local_migrations()?;
+    if local.is_empty() {
+        println!("No migrations found in puffgres/migrations/");
+        return Ok(());
+    }
+
+    let tracker = MigrationTracker::new(&store);
+    let status = tracker.validate(&local).await?;
+
+    // Check for errors
+    if !status.mismatched.is_empty() {
+        println!("\nMigration Hash Mismatches (ERROR):");
+        for m in &status.mismatched {
+            println!(
+                "  v{} {}: local hash differs from applied",
+                m.version, m.mapping_name
+            );
+            println!("    Applied: {}", m.expected_hash);
+            println!("    Local:   {}", m.actual_hash);
+        }
+        anyhow::bail!("Cannot proceed: applied migrations have been modified locally");
+    }
+
+    // Show status
+    if !status.applied.is_empty() {
+        println!("\nAlready Applied:");
+        for name in &status.applied {
+            println!("  {}", name);
+        }
+    }
+
+    if status.pending.is_empty() {
+        println!("\nAll migrations are up to date.");
+        return Ok(());
+    }
+
+    println!("\nPending Migrations:");
+    for name in &status.pending {
+        println!("  {}", name);
+    }
+
+    if dry_run {
+        println!("\n(dry run - no changes made)");
+        return Ok(());
+    }
+
+    // Apply pending migrations
+    let applied = tracker.apply(&local, false).await?;
+
+    println!("\nApplied {} migration(s).", applied.len());
     Ok(())
 }
 
@@ -198,12 +395,23 @@ async fn cmd_run(
 ) -> Result<()> {
     info!("Starting puffgres CDC replication");
 
-    // Load migrations
-    let migrations = config.load_migrations()?;
-    if migrations.is_empty() {
+    // Connect to Postgres state store
+    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+        .await
+        .context("Failed to connect to Postgres")?;
+
+    // Load and validate migrations
+    let local = config.load_local_migrations()?;
+    if local.is_empty() {
         anyhow::bail!("No migrations found in puffgres/migrations/");
     }
 
+    // Validate migrations match what's applied (pending migrations are allowed)
+    let tracker = MigrationTracker::new(&store);
+    tracker.validate_or_fail(&local, true).await?;
+
+    // Load migrations as Mappings
+    let migrations = config.load_migrations()?;
     info!(count = migrations.len(), "Loaded migrations");
 
     // Run the CDC loop
@@ -217,14 +425,13 @@ async fn cmd_run(
     .await
 }
 
-fn cmd_status(config: ProjectConfig) -> Result<()> {
-    use puffgres_state::{SqliteStateStore, StateStore};
+async fn cmd_status(config: ProjectConfig) -> Result<()> {
+    // Connect to Postgres state store
+    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+        .await
+        .context("Failed to connect to Postgres")?;
 
-    let state_path = config.resolve_env(&config.state.path);
-    let store = SqliteStateStore::open(&state_path)
-        .with_context(|| format!("Failed to open state store: {}", state_path))?;
-
-    let checkpoints = store.get_all_checkpoints()?;
+    let checkpoints = store.get_all_checkpoints().await?;
 
     if checkpoints.is_empty() {
         println!("No sync state found. Run 'puffgres run' to start syncing.");
@@ -244,6 +451,43 @@ fn cmd_status(config: ProjectConfig) -> Result<()> {
 
     println!();
     Ok(())
+}
+
+async fn cmd_backfill(
+    config: ProjectConfig,
+    mapping_name: &str,
+    batch_size: u32,
+    resume: bool,
+) -> Result<()> {
+    // Load migrations to find the mapping
+    let mappings = config.load_migrations()?;
+
+    let mapping = mappings
+        .iter()
+        .find(|m| m.name == mapping_name)
+        .context(format!("Mapping '{}' not found", mapping_name))?;
+
+    backfill::run_backfill(&config, mapping, batch_size, resume).await
+}
+
+async fn cmd_dlq(config: ProjectConfig, command: DlqCommands) -> Result<()> {
+    // Connect to Postgres state store
+    let store = PostgresStateStore::connect(&config.postgres_connection_string())
+        .await
+        .context("Failed to connect to Postgres")?;
+
+    match command {
+        DlqCommands::List { mapping, limit } => {
+            dlq::cmd_dlq_list(&store, mapping.as_deref(), limit).await
+        }
+        DlqCommands::Show { id } => dlq::cmd_dlq_show(&store, id).await,
+        DlqCommands::Retry { id, mapping } => {
+            dlq::cmd_dlq_retry(&store, id, mapping.as_deref()).await
+        }
+        DlqCommands::Clear { mapping, all } => {
+            dlq::cmd_dlq_clear(&store, mapping.as_deref(), all).await
+        }
+    }
 }
 
 #[cfg(test)]

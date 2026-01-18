@@ -54,17 +54,7 @@ outputs a request struct suitable for TP adapter
 
 golden tests from fixtures
 
-Issue 5 — Turbopuffer client abstraction + adapter
-
-Goal: Implement TurbopufferClient trait and one real adapter (wrapping an existing Rust client if desired) plus a mock.
-
-Acceptance criteria
-
-mock client captures writes for tests
-
-retry policy scaffolding present (can be stubbed)
-
-integration-ish test verifies batching → adapter calls
+Issue 5 — (Removed: using rs-puff directly)
 
 Issue 6 — Rust transform interface + identity transform
 
@@ -80,19 +70,19 @@ transform errors produce Action::Error
 
 unit tests for transform plumbing
 
-Issue 7 — JS transform adapter (feature flag)
+Issue 7 — TypeScript transform adapter
 
-Goal: Optional JS transforms with deterministic execution.
+Goal: Full TypeScript/JavaScript transform support via Node.js runtime.
 
 Acceptance criteria
 
---features js enables JS transforms
+transforms are local TS/JS files loaded at runtime
 
-loads module, calls entry function
+TransformContext provides embed(), fetch(), env, lookup() helpers
 
-provides ctx with stubbed helpers
+transform paths resolved relative to puffgres.toml
 
-tests with a tiny JS transform fixture
+tests with TypeScript transform examples
 
 Issue 8 — Postgres introspection for generate wizard
 
