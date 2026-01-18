@@ -9,7 +9,7 @@ pub use backfill::{BackfillConfig, BackfillProgress as BackfillScanProgress, Bac
 pub use error::{PgError, PgResult};
 pub use migrations::{compute_content_hash, LocalMigration, MigrationTracker, MigrationStatus};
 pub use state::{
-    AppliedMigration, BackfillProgress, Checkpoint, DlqEntry, PostgresStateStore,
+    AppliedMigration, BackfillProgress, Checkpoint, DlqEntry, PostgresStateStore, StoredTransform,
 };
 pub use streaming::{format_lsn, parse_lsn, StreamingBatch, StreamingConfig, StreamingReplicator};
 pub use wal2json::{PollerConfig, Wal2JsonPoller};

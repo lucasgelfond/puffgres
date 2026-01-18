@@ -54,6 +54,17 @@ pub struct BackfillProgress {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Stored transform for immutability tracking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredTransform {
+    pub id: i32,
+    pub mapping_name: String,
+    pub version: i32,
+    pub content: String,
+    pub content_hash: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// PostgreSQL-backed state store.
 ///
 /// Stores all puffgres state in __puffgres_* tables in the user's database.
@@ -157,6 +168,43 @@ impl PostgresStateStore {
                     processed_rows BIGINT DEFAULT 0,
                     status TEXT DEFAULT 'pending',
                     updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                "#,
+                &[],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        // Transform storage for immutability tracking
+        self.client
+            .execute(
+                r#"
+                CREATE TABLE IF NOT EXISTS __puffgres_transforms (
+                    id SERIAL PRIMARY KEY,
+                    mapping_name TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(mapping_name, version)
+                )
+                "#,
+                &[],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        // Migration content storage for reset functionality
+        self.client
+            .execute(
+                r#"
+                CREATE TABLE IF NOT EXISTS __puffgres_migration_content (
+                    id SERIAL PRIMARY KEY,
+                    version INTEGER NOT NULL,
+                    mapping_name TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(version, mapping_name)
                 )
                 "#,
                 &[],
@@ -557,6 +605,198 @@ impl PostgresStateStore {
             )
             .await
             .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Transform storage methods
+    // -------------------------------------------------------------------------
+
+    /// Store a transform for immutability tracking.
+    pub async fn store_transform(
+        &self,
+        mapping_name: &str,
+        version: i32,
+        content: &str,
+        content_hash: &str,
+    ) -> PgResult<()> {
+        self.client
+            .execute(
+                r#"
+                INSERT INTO __puffgres_transforms (mapping_name, version, content, content_hash)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (mapping_name, version) DO NOTHING
+                "#,
+                &[&mapping_name, &version, &content, &content_hash],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        info!(mapping_name, version, "Stored transform");
+        Ok(())
+    }
+
+    /// Get a stored transform by mapping name and version.
+    pub async fn get_transform(
+        &self,
+        mapping_name: &str,
+        version: i32,
+    ) -> PgResult<Option<StoredTransform>> {
+        let row = self
+            .client
+            .query_opt(
+                r#"
+                SELECT id, mapping_name, version, content, content_hash, created_at
+                FROM __puffgres_transforms
+                WHERE mapping_name = $1 AND version = $2
+                "#,
+                &[&mapping_name, &version],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        Ok(row.map(|r| StoredTransform {
+            id: r.get(0),
+            mapping_name: r.get(1),
+            version: r.get(2),
+            content: r.get(3),
+            content_hash: r.get(4),
+            created_at: r.get(5),
+        }))
+    }
+
+    /// Get all stored transforms.
+    pub async fn get_all_transforms(&self) -> PgResult<Vec<StoredTransform>> {
+        let rows = self
+            .client
+            .query(
+                r#"
+                SELECT id, mapping_name, version, content, content_hash, created_at
+                FROM __puffgres_transforms
+                ORDER BY mapping_name, version
+                "#,
+                &[],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| StoredTransform {
+                id: r.get(0),
+                mapping_name: r.get(1),
+                version: r.get(2),
+                content: r.get(3),
+                content_hash: r.get(4),
+                created_at: r.get(5),
+            })
+            .collect())
+    }
+
+    // -------------------------------------------------------------------------
+    // Migration content storage methods
+    // -------------------------------------------------------------------------
+
+    /// Store migration content for reset functionality.
+    pub async fn store_migration_content(
+        &self,
+        version: i32,
+        mapping_name: &str,
+        content: &str,
+    ) -> PgResult<()> {
+        self.client
+            .execute(
+                r#"
+                INSERT INTO __puffgres_migration_content (version, mapping_name, content)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (version, mapping_name) DO NOTHING
+                "#,
+                &[&version, &mapping_name, &content],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Get migration content by version and mapping name.
+    pub async fn get_migration_content(
+        &self,
+        version: i32,
+        mapping_name: &str,
+    ) -> PgResult<Option<String>> {
+        let row = self
+            .client
+            .query_opt(
+                r#"
+                SELECT content
+                FROM __puffgres_migration_content
+                WHERE version = $1 AND mapping_name = $2
+                "#,
+                &[&version, &mapping_name],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        Ok(row.map(|r| r.get(0)))
+    }
+
+    /// Get all migration content.
+    pub async fn get_all_migration_content(&self) -> PgResult<Vec<(i32, String, String)>> {
+        let rows = self
+            .client
+            .query(
+                r#"
+                SELECT version, mapping_name, content
+                FROM __puffgres_migration_content
+                ORDER BY version, mapping_name
+                "#,
+                &[],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2)))
+            .collect())
+    }
+
+    // -------------------------------------------------------------------------
+    // Cleanup methods
+    // -------------------------------------------------------------------------
+
+    /// Clear all checkpoints.
+    pub async fn clear_all_checkpoints(&self) -> PgResult<u64> {
+        let count = self
+            .client
+            .execute("DELETE FROM __puffgres_checkpoints", &[])
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        info!(count, "Cleared all checkpoints");
+        Ok(count)
+    }
+
+    /// Drop all puffgres tables.
+    pub async fn drop_all_tables(&self) -> PgResult<()> {
+        let tables = [
+            "__puffgres_migrations",
+            "__puffgres_checkpoints",
+            "__puffgres_dlq",
+            "__puffgres_backfill",
+            "__puffgres_transforms",
+            "__puffgres_migration_content",
+        ];
+
+        for table in &tables {
+            self.client
+                .execute(&format!("DROP TABLE IF EXISTS {} CASCADE", table), &[])
+                .await
+                .map_err(|e| PgError::Postgres(e.to_string()))?;
+            info!(table, "Dropped table");
+        }
 
         Ok(())
     }

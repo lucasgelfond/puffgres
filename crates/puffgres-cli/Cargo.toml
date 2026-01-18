@@ -25,3 +25,7 @@ puffgres-core = { workspace = true }
 puffgres-config = { workspace = true }
 puffgres-pg = { workspace = true }
 rs-puff = { workspace = true }
+dialoguer = { workspace = true }
+colored = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

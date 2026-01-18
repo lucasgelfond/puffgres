@@ -27,6 +27,10 @@ pub struct PostgresConfig {
 #[derive(Debug, Deserialize)]
 pub struct TurbopufferConfig {
     pub api_key: String,
+    /// Optional base namespace prefix for environment separation (e.g., "PRODUCTION", "DEVELOPMENT").
+    /// If set, all turbopuffer namespaces will be prefixed with this value.
+    #[serde(default)]
+    pub base_namespace: Option<String>,
 }
 
 /// Configuration for external providers (embeddings, etc.)
@@ -80,7 +84,26 @@ impl ProjectConfig {
         self.resolve_env(&self.turbopuffer.api_key)
     }
 
+    /// Get the resolved base namespace prefix, if configured.
+    pub fn base_namespace(&self) -> Option<String> {
+        self.turbopuffer
+            .base_namespace
+            .as_ref()
+            .map(|ns| self.resolve_env(ns))
+            .filter(|ns| !ns.is_empty())
+    }
+
+    /// Apply the base namespace prefix to a namespace name.
+    pub fn apply_namespace_prefix(&self, namespace: &str) -> String {
+        if let Some(prefix) = self.base_namespace() {
+            format!("{}_{}", prefix, namespace)
+        } else {
+            namespace.to_string()
+        }
+    }
+
     /// Load all migrations from the migrations directory.
+    /// Applies the base namespace prefix if configured.
     pub fn load_migrations(&self) -> Result<Vec<Mapping>> {
         let migrations_dir = Path::new("puffgres/migrations");
 
@@ -101,8 +124,11 @@ impl ProjectConfig {
                 let config = MigrationConfig::parse(&content)
                     .with_context(|| format!("Failed to parse migration: {}", path.display()))?;
 
-                let mapping = puffgres_config::to_mapping(&config)
+                let mut mapping = puffgres_config::to_mapping(&config)
                     .with_context(|| format!("Invalid migration: {}", path.display()))?;
+
+                // Apply base namespace prefix if configured
+                mapping.namespace = self.apply_namespace_prefix(&mapping.namespace);
 
                 mappings.push(mapping);
             }
@@ -164,6 +190,7 @@ mod tests {
             },
             turbopuffer: TurbopufferConfig {
                 api_key: "key".to_string(),
+                base_namespace: None,
             },
             providers: ProvidersConfig::default(),
         };
