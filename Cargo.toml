@@ -6,9 +6,6 @@ members = [
     "crates/puffgres-core",
     "crates/puffgres-pg",
 ]
-exclude = [
-    "npm/native",
-]
 
 [workspace.package]
 version = "0.2.2"

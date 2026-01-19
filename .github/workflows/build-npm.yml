@@ -1,4 +1,4 @@
-name: Release
+name: Publish npm
 
 on:
   push:
@@ -11,61 +11,7 @@ on:
         required: true
 
 jobs:
-  build-native:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: libpuffgres_neon.so
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            artifact: libpuffgres_neon.so
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: libpuffgres_neon.dylib
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: libpuffgres_neon.dylib
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: puffgres_neon.dll
-
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install cross-compilation tools (Linux ARM)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Build native addon
-        working-directory: npm/native
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-${{ matrix.target }}
-          path: npm/native/target/${{ matrix.target }}/release/${{ matrix.artifact }}
-
   publish:
-    needs: build-native
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -85,50 +31,11 @@ jobs:
         with:
           version: 8
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Organize native binaries
-        run: |
-          mkdir -p npm/native/prebuilds
-
-          # Linux x64
-          if [ -f artifacts/native-x86_64-unknown-linux-gnu/libpuffgres_neon.so ]; then
-            mkdir -p npm/native/prebuilds/linux-x64
-            cp artifacts/native-x86_64-unknown-linux-gnu/libpuffgres_neon.so npm/native/prebuilds/linux-x64/puffgres.node
-          fi
-
-          # Linux ARM64
-          if [ -f artifacts/native-aarch64-unknown-linux-gnu/libpuffgres_neon.so ]; then
-            mkdir -p npm/native/prebuilds/linux-arm64
-            cp artifacts/native-aarch64-unknown-linux-gnu/libpuffgres_neon.so npm/native/prebuilds/linux-arm64/puffgres.node
-          fi
-
-          # macOS x64
-          if [ -f artifacts/native-x86_64-apple-darwin/libpuffgres_neon.dylib ]; then
-            mkdir -p npm/native/prebuilds/darwin-x64
-            cp artifacts/native-x86_64-apple-darwin/libpuffgres_neon.dylib npm/native/prebuilds/darwin-x64/puffgres.node
-          fi
-
-          # macOS ARM64
-          if [ -f artifacts/native-aarch64-apple-darwin/libpuffgres_neon.dylib ]; then
-            mkdir -p npm/native/prebuilds/darwin-arm64
-            cp artifacts/native-aarch64-apple-darwin/libpuffgres_neon.dylib npm/native/prebuilds/darwin-arm64/puffgres.node
-          fi
-
-          # Windows x64
-          if [ -f artifacts/native-x86_64-pc-windows-msvc/puffgres_neon.dll ]; then
-            mkdir -p npm/native/prebuilds/win32-x64
-            cp artifacts/native-x86_64-pc-windows-msvc/puffgres_neon.dll npm/native/prebuilds/win32-x64/puffgres.node
-          fi
-
       - name: Install dependencies
         working-directory: npm
         run: pnpm install
 
-      - name: Build
+      - name: Build TypeScript
         working-directory: npm
         run: pnpm run build
 
@@ -137,33 +44,16 @@ jobs:
         working-directory: npm
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
-          npm version $VERSION --no-git-tag-version
+          npm version $VERSION --no-git-tag-version --allow-same-version
 
       - name: Update version from input
         if: github.event_name == 'workflow_dispatch'
         working-directory: npm
         run: |
-          npm version ${{ github.event.inputs.version }} --no-git-tag-version
+          npm version ${{ github.event.inputs.version }} --no-git-tag-version --allow-same-version
 
       - name: Publish to npm
         working-directory: npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
-
-  create-release:
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          generate_release_notes: true
-          files: |
-            npm/native/prebuilds/**/*

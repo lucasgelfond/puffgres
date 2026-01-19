@@ -95,7 +95,7 @@ api_key = "${TURBOPUFFER_API_KEY}"
 
     // Create Dockerfile for containerized deployments
     let dockerfile_content = r#"# Dockerfile for puffgres
-# Downloads pre-built binary from GitHub releases
+# Downloads pre-built Rust binary from GitHub releases
 
 FROM node:22-slim
 
@@ -132,14 +132,14 @@ WORKDIR /app
 # Copy package files first for better caching
 COPY package.json pnpm-lock.yaml* ./
 
-# Install dependencies
+# Install dependencies (includes puffgres npm package for transform executor)
 RUN pnpm install --frozen-lockfile || pnpm install
 
 # Copy the rest of the application
 COPY . .
 
-# Default command
-CMD ["pnpm", "run", "start"]
+# Run the Rust binary directly
+CMD ["puffgres", "run"]
 "#;
 
     let dockerfile_path = Path::new("Dockerfile");

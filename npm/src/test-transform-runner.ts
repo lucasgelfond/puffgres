@@ -354,6 +354,11 @@ function generateFakeId(idType: string): DocumentId {
   }
 }
 
+/**
+ * Number of test rows to generate for batch transform testing.
+ */
+const TEST_ROW_COUNT = 5;
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const migrationName = args[0];
@@ -363,24 +368,31 @@ async function main(): Promise<void> {
     // Legacy mode: parse JSON config directly
     const config = JSON.parse(migrationName);
 
-    const fakeRow: Record<string, unknown> = {};
-    for (const col of config.columns) {
-      fakeRow[col.name] = generateFakeValue(col.name, col.data_type);
-    }
+    // Generate multiple test rows
+    const testRows: Array<{ fakeRow: Record<string, unknown>; id: DocumentId; event: RowEvent }> = [];
 
-    const id = generateFakeId(config.id_type);
-    if (config.id_column && config.id_column in fakeRow) {
-      fakeRow[config.id_column] = id;
-    }
+    for (let i = 0; i < TEST_ROW_COUNT; i++) {
+      const fakeRow: Record<string, unknown> = {};
+      for (const col of config.columns) {
+        fakeRow[col.name] = generateFakeValue(col.name, col.data_type);
+      }
 
-    const event: RowEvent = {
-      op: config.op as 'insert' | 'update' | 'delete',
-      schema: config.schema,
-      table: config.table,
-      new: config.op === 'delete' ? undefined : fakeRow,
-      old: config.op === 'insert' ? undefined : fakeRow,
-      lsn: 0,
-    };
+      const id = generateFakeId(config.id_type);
+      if (config.id_column && config.id_column in fakeRow) {
+        fakeRow[config.id_column] = id;
+      }
+
+      const event: RowEvent = {
+        op: config.op as 'insert' | 'update' | 'delete',
+        schema: config.schema,
+        table: config.table,
+        new: config.op === 'delete' ? undefined : fakeRow,
+        old: config.op === 'insert' ? undefined : fakeRow,
+        lsn: i,
+      };
+
+      testRows.push({ fakeRow, id, event });
+    }
 
     const fullPath = resolve(process.cwd(), config.transform_path);
     const module = await import(fullPath);
@@ -400,11 +412,16 @@ async function main(): Promise<void> {
       env: process.env as Record<string, string>,
     };
     const ctx = createTransformContext(contextConfig);
-    const rows: TransformInput[] = [{ event, id }];
+    const rows: TransformInput[] = testRows.map(({ event, id }) => ({ event, id }));
     const results: Action[] = await transform(rows, ctx);
-    const result = results[0];
 
-    console.log(JSON.stringify({ fakeRow, result }));
+    // Output all rows with their results
+    const outputRows = testRows.map((row, i) => ({
+      fakeRow: row.fakeRow,
+      result: results[i],
+    }));
+
+    console.log(JSON.stringify({ rowCount: TEST_ROW_COUNT, rows: outputRows }));
     return;
   }
 
@@ -468,30 +485,36 @@ async function main(): Promise<void> {
       ? columnSchemas.filter((col) => configColumns.includes(col.name))
       : columnSchemas;
 
-    // Generate fake row
-    const fakeRow: Record<string, unknown> = {};
-    for (const col of relevantColumns) {
-      fakeRow[col.name] = generateFakeValue(col.name, col.data_type);
-    }
+    // Generate multiple fake rows for batch testing
+    const testRows: Array<{ fakeRow: Record<string, unknown>; id: DocumentId; event: RowEvent }> = [];
 
-    // Generate ID
-    const id = generateFakeId(config.id.type);
-    if (config.id.column in fakeRow) {
-      fakeRow[config.id.column] = id;
-    }
+    for (let i = 0; i < TEST_ROW_COUNT; i++) {
+      const fakeRow: Record<string, unknown> = {};
+      for (const col of relevantColumns) {
+        fakeRow[col.name] = generateFakeValue(col.name, col.data_type);
+      }
 
-    // Create row event
-    const event: RowEvent = {
-      op: 'insert',
-      schema: config.source.schema,
-      table: config.source.table,
-      new: fakeRow,
-      old: undefined,
-      lsn: 0,
-    };
+      // Generate ID
+      const id = generateFakeId(config.id.type);
+      if (config.id.column in fakeRow) {
+        fakeRow[config.id.column] = id;
+      }
+
+      // Create row event
+      const event: RowEvent = {
+        op: 'insert',
+        schema: config.source.schema,
+        table: config.source.table,
+        new: fakeRow,
+        old: undefined,
+        lsn: i,
+      };
+
+      testRows.push({ fakeRow, id, event });
+    }
 
     // Run transform if one exists
-    let result: Action | null = null;
+    let results: Action[] = [];
 
     if (config.transform?.path) {
       // Resolve transform path relative to puffgres directory (parent of migrations)
@@ -513,23 +536,28 @@ async function main(): Promise<void> {
             env: process.env as Record<string, string>,
           };
           const ctx = createTransformContext(contextConfig);
-          const rows: TransformInput[] = [{ event, id }];
-          const results: Action[] = await transform(rows, ctx);
-          result = results[0];
+          const rows: TransformInput[] = testRows.map(({ event, id }) => ({ event, id }));
+          results = await transform(rows, ctx);
         }
       }
     }
 
-    // If no transform, generate default upsert
-    if (!result) {
-      result = {
-        type: 'upsert',
+    // If no transform, generate default upserts
+    if (results.length === 0) {
+      results = testRows.map(({ fakeRow, id }) => ({
+        type: 'upsert' as const,
         id,
         doc: fakeRow,
-      };
+      }));
     }
 
-    // Output everything
+    // Output everything - combine each row with its result
+    const outputRows = testRows.map((row, i) => ({
+      fakeRow: row.fakeRow,
+      event: row.event,
+      result: results[i],
+    }));
+
     console.log(
       JSON.stringify(
         {
@@ -539,9 +567,8 @@ async function main(): Promise<void> {
             table: `${config.source.schema}.${config.source.table}`,
           },
           columns: relevantColumns,
-          fakeRow,
-          event,
-          result,
+          rowCount: TEST_ROW_COUNT,
+          rows: outputRows,
         },
         null,
         2

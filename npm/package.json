@@ -12,17 +12,13 @@
     }
   },
   "bin": {
-    "puffgres": "./dist/cli.js",
     "puffgres-transform": "./dist/transform-executor.js",
     "puffgres-test-transform": "./dist/test-transform-runner.js"
   },
   "scripts": {
-    "start": "node ./dist/cli.js run",
     "test-transform-runner": "tsx ./src/test-transform-runner.ts",
     "build": "tsc",
-    "build:native": "cd native && cargo build --release && node ../scripts/copy-native.js",
-    "build:all": "npm run build && npm run build:native",
-    "clean": "rm -rf dist native/target",
+    "clean": "rm -rf dist",
     "prepublishOnly": "npm run build",
     "test": "node --test dist/**/*.test.js",
     "test:e2e": "node --test --loader tsx tests/e2e/*.test.ts"
@@ -44,11 +40,7 @@
   "license": "MIT",
   "files": [
     "dist",
-    "types",
-    "native/*.node",
-    "native/prebuilds",
-    "scripts",
-    "docs"
+    "types"
   ],
   "engines": {
     "node": ">=18.0.0"
