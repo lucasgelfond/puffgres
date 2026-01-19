@@ -189,7 +189,7 @@ fn compare_actions(actual: &[Action], expected: &[ExpectedAction]) {
 
     for (i, (act, exp)) in actual.iter().zip(expected.iter()).enumerate() {
         match (act, exp.action_type.as_str()) {
-            (Action::Upsert { id, doc }, "upsert") => {
+            (Action::Upsert { id, doc, .. }, "upsert") => {
                 // Compare ID
                 let expected_id = match &exp.id {
                     serde_json::Value::Number(n) => {

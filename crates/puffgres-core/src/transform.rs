@@ -164,7 +164,7 @@ mod tests {
         let action = transformer.transform(&event, 1u64.into()).unwrap();
 
         match action {
-            Action::Upsert { id, doc } => {
+            Action::Upsert { id, doc, .. } => {
                 assert_eq!(id, DocumentId::Uint(1));
                 assert_eq!(doc.len(), 2);
                 assert!(doc.contains_key("name"));

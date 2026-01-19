@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
@@ -127,8 +127,8 @@ pub async fn run_backfill(
     let mut batcher = Batcher::new(batch_config);
 
     // Progress tracking
-    let mut last_progress_update = Instant::now();
-    let progress_interval = Duration::from_secs(1);
+    let mut upserted_rows: i64 = 0;
+    let mut spinner_frame: usize = 0;
 
     // Batch size for sending to JS transform (500 rows at a time)
     const JS_TRANSFORM_BATCH_SIZE: usize = 500;
@@ -162,7 +162,7 @@ pub async fn run_backfill(
 
             // When we have enough rows, process a batch
             if transform_input.len() >= JS_TRANSFORM_BATCH_SIZE {
-                process_transform_batch(
+                upserted_rows += process_transform_batch(
                     &transformer,
                     &transform_input,
                     &mapping,
@@ -171,14 +171,14 @@ pub async fn run_backfill(
                     upload_batch_size,
                     max_retries,
                 )
-                .await?;
+                .await? as i64;
                 transform_input.clear();
             }
         }
 
         // Process any remaining rows
         if !transform_input.is_empty() {
-            process_transform_batch(
+            upserted_rows += process_transform_batch(
                 &transformer,
                 &transform_input,
                 &mapping,
@@ -187,17 +187,18 @@ pub async fn run_backfill(
                 upload_batch_size,
                 max_retries,
             )
-            .await?;
+            .await? as i64;
         }
 
         // Flush any remaining items in the batcher
         for batch in batcher.flush_all() {
             let request = WriteRequest::from_batch(batch);
-            flush_batch(&tp_client, &request, upload_batch_size, max_retries).await?;
+            upserted_rows +=
+                flush_batch(&tp_client, &request, upload_batch_size, max_retries).await? as i64;
         }
 
         // Update progress in database
-        let progress = scanner.progress();
+        let progress = scanner.progress(upserted_rows);
         state_store
             .update_backfill_progress(
                 &mapping.name,
@@ -208,22 +209,21 @@ pub async fn run_backfill(
             )
             .await?;
 
-        // Print progress periodically
-        if last_progress_update.elapsed() >= progress_interval {
-            print!("\r{}", progress.format());
-            io::stdout().flush().ok();
-            last_progress_update = Instant::now();
-        }
+        // Print progress after every batch
+        print!("\r{}", progress.format(spinner_frame));
+        io::stdout().flush().ok();
+        spinner_frame = spinner_frame.wrapping_add(1);
     }
 
     // Final flush
     for batch in batcher.flush_all() {
         let request = WriteRequest::from_batch(batch);
-        flush_batch(&tp_client, &request, upload_batch_size, max_retries).await?;
+        upserted_rows +=
+            flush_batch(&tp_client, &request, upload_batch_size, max_retries).await? as i64;
     }
 
     // Mark as complete
-    let final_progress = scanner.progress();
+    let final_progress = scanner.progress(upserted_rows);
     state_store
         .update_backfill_progress(
             &mapping.name,
@@ -234,14 +234,15 @@ pub async fn run_backfill(
         )
         .await?;
 
-    // Print final status
-    println!("\r{}", final_progress.format());
+    // Print final status with checkmark
+    println!("\r✓ {}", final_progress.format(spinner_frame));
     println!("\nBackfill complete!");
 
     Ok(())
 }
 
 /// Process a batch of rows through the transform.
+/// Returns the number of rows upserted to turbopuffer.
 async fn process_transform_batch(
     transformer: &MappingTransformer,
     rows: &[(&puffgres_core::RowEvent, DocumentId)],
@@ -250,9 +251,9 @@ async fn process_transform_batch(
     tp_client: &rs_puff::Client,
     upload_batch_size: usize,
     max_retries: u32,
-) -> Result<()> {
+) -> Result<usize> {
     if rows.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
     debug!(
@@ -270,10 +271,11 @@ async fn process_transform_batch(
                 batch_size = rows.len(),
                 "Transform batch failed during backfill"
             );
-            return Ok(());
+            return Ok(0);
         }
     };
 
+    let mut upserted = 0;
     for action in actions {
         if !action.requires_write() {
             continue;
@@ -282,22 +284,23 @@ async fn process_transform_batch(
         // Add to batcher
         if let Some(batch) = batcher.add(&mapping.namespace, action, 0) {
             let request = WriteRequest::from_batch(batch);
-            flush_batch(tp_client, &request, upload_batch_size, max_retries).await?;
+            upserted += flush_batch(tp_client, &request, upload_batch_size, max_retries).await?;
         }
     }
 
-    Ok(())
+    Ok(upserted)
 }
 
 /// Flush a batch to turbopuffer with chunking and retry logic.
+/// Returns the number of rows upserted.
 async fn flush_batch(
     client: &rs_puff::Client,
     request: &WriteRequest,
     upload_batch_size: usize,
     max_retries: u32,
-) -> Result<()> {
+) -> Result<usize> {
     if request.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
     debug!(
@@ -322,6 +325,8 @@ async fn flush_batch(
         })
         .collect();
 
+    let total_upserted = all_upsert_rows.len();
+
     // Upload in chunks (backfill is upserts-only, no deletes)
     for chunk in all_upsert_rows.chunks(upload_batch_size) {
         let params = rs_puff::WriteParams {
@@ -333,7 +338,7 @@ async fn flush_batch(
         write_with_retry(client, &request.namespace, params, max_retries).await?;
     }
 
-    Ok(())
+    Ok(total_upserted)
 }
 
 /// Write to turbopuffer with exponential backoff retry.

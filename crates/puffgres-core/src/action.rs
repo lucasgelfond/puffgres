@@ -251,7 +251,7 @@ mod tests {
         let action = Action::upsert(42u64, doc.clone());
 
         match action {
-            Action::Upsert { id, doc: d } => {
+            Action::Upsert { id, doc: d, .. } => {
                 assert_eq!(id, DocumentId::Uint(42));
                 assert_eq!(d, doc);
             }

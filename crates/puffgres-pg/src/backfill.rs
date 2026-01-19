@@ -37,26 +37,73 @@ pub struct BackfillProgress {
     pub last_id: Option<String>,
     /// Total rows in the table (estimated).
     pub total_rows: Option<i64>,
-    /// Rows processed so far.
+    /// Rows processed so far (read from postgres).
     pub processed_rows: i64,
-    /// Rows per second.
+    /// Rows upserted to turbopuffer.
+    pub upserted_rows: i64,
+    /// Rows processed per second.
     pub rows_per_second: f64,
+    /// Rows upserted per second.
+    pub upserts_per_second: f64,
     /// Percentage complete.
     pub percent_complete: f64,
+    /// Elapsed time in seconds.
+    pub elapsed_secs: f64,
+    /// Estimated time remaining in seconds.
+    pub eta_secs: Option<f64>,
 }
 
+/// Spinner frames for animation.
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 impl BackfillProgress {
-    /// Format as a progress line.
-    pub fn format(&self) -> String {
+    /// Format elapsed time as human-readable string.
+    fn format_duration(secs: f64) -> String {
+        let total_secs = secs as u64;
+        let hours = total_secs / 3600;
+        let mins = (total_secs % 3600) / 60;
+        let secs = total_secs % 60;
+        if hours > 0 {
+            format!("{}h{}m{}s", hours, mins, secs)
+        } else if mins > 0 {
+            format!("{}m{}s", mins, secs)
+        } else {
+            format!("{}s", secs)
+        }
+    }
+
+    /// Format as a progress line with spinner.
+    pub fn format(&self, spinner_frame: usize) -> String {
+        let spinner = SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()];
+        let elapsed = Self::format_duration(self.elapsed_secs);
+        let eta = self
+            .eta_secs
+            .map(|s| format!(" ETA {}", Self::format_duration(s)))
+            .unwrap_or_default();
+
         if let Some(total) = self.total_rows {
             format!(
-                "[{:>5.1}%] {}/{} rows ({:.0} rows/sec)",
-                self.percent_complete, self.processed_rows, total, self.rows_per_second
+                "{} [{:>5.1}%] {}/{} read | {} upserted ({:.0} read/s, {:.0} upsert/s) [{}{}]",
+                spinner,
+                self.percent_complete,
+                self.processed_rows,
+                total,
+                self.upserted_rows,
+                self.rows_per_second,
+                self.upserts_per_second,
+                elapsed,
+                eta
             )
         } else {
             format!(
-                "{} rows ({:.0} rows/sec)",
-                self.processed_rows, self.rows_per_second
+                "{} {} read | {} upserted ({:.0} read/s, {:.0} upsert/s) [{}{}]",
+                spinner,
+                self.processed_rows,
+                self.upserted_rows,
+                self.rows_per_second,
+                self.upserts_per_second,
+                elapsed,
+                eta
             )
         }
     }
@@ -127,10 +174,15 @@ impl BackfillScanner {
     }
 
     /// Get current progress.
-    pub fn progress(&self) -> BackfillProgress {
-        let elapsed = self.start_time.elapsed().as_secs_f64();
-        let rows_per_second = if elapsed > 0.0 {
-            self.processed_rows as f64 / elapsed
+    pub fn progress(&self, upserted_rows: i64) -> BackfillProgress {
+        let elapsed_secs = self.start_time.elapsed().as_secs_f64();
+        let rows_per_second = if elapsed_secs > 0.0 {
+            self.processed_rows as f64 / elapsed_secs
+        } else {
+            0.0
+        };
+        let upserts_per_second = if elapsed_secs > 0.0 {
+            upserted_rows as f64 / elapsed_secs
         } else {
             0.0
         };
@@ -145,12 +197,32 @@ impl BackfillScanner {
             0.0
         };
 
+        // Calculate ETA based on rows_per_second
+        let eta_secs = if let Some(total) = self.total_rows {
+            if rows_per_second > 0.0 {
+                let remaining = total - self.processed_rows;
+                if remaining > 0 {
+                    Some(remaining as f64 / rows_per_second)
+                } else {
+                    Some(0.0)
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         BackfillProgress {
             last_id: self.last_id.clone(),
             total_rows: self.total_rows,
             processed_rows: self.processed_rows,
+            upserted_rows,
             rows_per_second,
+            upserts_per_second,
             percent_complete,
+            elapsed_secs,
+            eta_secs,
         }
     }
 
@@ -360,14 +432,22 @@ mod tests {
             last_id: Some("100".to_string()),
             total_rows: Some(10000),
             processed_rows: 4520,
+            upserted_rows: 4000,
             rows_per_second: 2340.5,
+            upserts_per_second: 2100.0,
             percent_complete: 45.2,
+            elapsed_secs: 65.0,
+            eta_secs: Some(120.0),
         };
 
-        let formatted = progress.format();
+        let formatted = progress.format(0);
         assert!(formatted.contains("45.2%"));
         assert!(formatted.contains("4520"));
         assert!(formatted.contains("10000"));
+        assert!(formatted.contains("4000"));
+        assert!(formatted.contains("upserted"));
+        assert!(formatted.contains("1m5s")); // elapsed
+        assert!(formatted.contains("ETA 2m0s")); // eta
     }
 
     #[test]

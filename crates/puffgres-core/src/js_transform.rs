@@ -327,7 +327,7 @@ mod tests {
         });
         let action = parse_action(&json, DocumentId::Uint(1)).unwrap();
         match action {
-            Action::Upsert { id, doc } => {
+            Action::Upsert { id, doc, .. } => {
                 assert_eq!(id, DocumentId::String("abc-123".to_string()));
                 assert!(doc.contains_key("name"));
                 assert!(doc.contains_key("value"));

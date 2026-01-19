@@ -1,0 +1,24 @@
+# Migration for testbackfill table
+version = 2
+mapping_name = "testbackfill_public"
+namespace = "testbackfill"
+
+[source]
+schema = "public"
+table = "page"
+
+[id]
+column = "id"
+type = "uuid"
+
+# Optional: filter which rows to sync
+# [membership]
+# mode = "dsl"
+# predicate = "status = 'active'"
+
+[versioning]
+mode = "source_lsn"
+
+[transform]
+type = "js"
+path = "./puffgres/transforms/testbackfill.ts"
