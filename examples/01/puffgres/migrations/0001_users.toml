@@ -20,6 +20,5 @@ type = "uint"
 [versioning]
 mode = "source_lsn"
 
-# Optional: custom transform
-# [transform]
-# path = "./transforms/users.ts"
+[transform]
+path = "./transforms/users.ts"

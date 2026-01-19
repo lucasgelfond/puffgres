@@ -1,0 +1,15 @@
+{
+  "name": "@puffgres/example-01",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "puffgres run",
+    "migrate": "puffgres migrate",
+    "status": "puffgres status",
+    "backfill": "puffgres backfill",
+    "test-transform-runner": "puffgres-test-transform"
+  },
+  "dependencies": {
+    "puffgres": "link:../../npm"
+  }
+}

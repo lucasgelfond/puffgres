@@ -4,9 +4,11 @@
  * Provides embed(), fetch(), and lookup() capabilities to transforms.
  */
 
-import type { TransformContext, DocumentId } from '../types/index.js';
+import type { TransformContext, DocumentId, MigrationInfo } from '../types/index.js';
 
 export interface ContextConfig {
+  /** Migration info */
+  migration: MigrationInfo;
   /** Environment variables */
   env?: Record<string, string>;
   /** Embedding provider config */
@@ -24,6 +26,7 @@ export interface ContextConfig {
  */
 export function createTransformContext(config: ContextConfig): TransformContext {
   return {
+    migration: config.migration,
     env: config.env ?? { ...process.env } as Record<string, string>,
 
     async embed(text: string): Promise<number[]> {

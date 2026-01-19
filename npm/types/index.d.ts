@@ -34,9 +34,26 @@ export type Action =
   | { type: 'skip' };
 
 /**
+ * Migration info passed to transforms.
+ */
+export interface MigrationInfo {
+  /** Migration name (mapping_name) */
+  name: string;
+  /** Namespace for turbopuffer */
+  namespace: string;
+  /** Source table in format schema.table */
+  table: string;
+}
+
+/**
  * Context provided to transform functions.
  */
 export interface TransformContext {
+  /**
+   * Migration info for the current transform.
+   */
+  migration: MigrationInfo;
+
   /**
    * Environment variables from the service.
    */

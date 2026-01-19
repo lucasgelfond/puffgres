@@ -6,3 +6,4 @@ puffgres.toml
 /npm/native/target
 .env
 **/.DS_Store
+/examples/**/node_modules

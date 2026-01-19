@@ -5,30 +5,33 @@
  * Called by the Rust JsTransformer to execute TypeScript/JavaScript transforms.
  *
  * Usage:
- *   npx tsx transform-executor.ts <transform-path> <event-json> <id-json>
+ *   npx tsx transform-executor.ts <transform-path> <event-json> <id-json> [migration-json]
  *
  * Output:
  *   Writes the Action result to stdout as JSON.
  */
 
 import { resolve } from 'path';
-import type { RowEvent, Action, TransformContext, DocumentId } from '../types/index.js';
+import type { RowEvent, Action, TransformContext, DocumentId, MigrationInfo } from '../types/index.js';
 import { createTransformContext, type ContextConfig } from './context.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
   if (args.length < 3) {
-    console.error('Usage: transform-executor <transform-path> <event-json> <id-json>');
+    console.error('Usage: transform-executor <transform-path> <event-json> <id-json> [migration-json]');
     process.exit(1);
   }
 
-  const [transformPath, eventJson, idJson] = args;
+  const [transformPath, eventJson, idJson, migrationJson] = args;
 
   try {
     // Parse inputs
     const event: RowEvent = JSON.parse(eventJson);
     const id: DocumentId = JSON.parse(idJson);
+    const migration: MigrationInfo = migrationJson
+      ? JSON.parse(migrationJson)
+      : { name: 'unknown', namespace: 'default', table: 'unknown' };
 
     // Load the transform
     const fullPath = resolve(process.cwd(), transformPath);
@@ -42,6 +45,7 @@ async function main(): Promise<void> {
     // Create context from environment
     const contextConfig: ContextConfig = {
       env: process.env as Record<string, string>,
+      migration,
     };
 
     // Add embedding provider if configured

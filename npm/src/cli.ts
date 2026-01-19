@@ -22,9 +22,12 @@ const TEMPLATES = {
   "scripts": {
     "start": "puffgres run",
     "migrate": "puffgres migrate",
-    "status": "puffgres status"
+    "status": "puffgres status",
+    "backfill": "puffgres backfill",
+    "test-transform-runner": "puffgres-test-transform"
   },
   "dependencies": {
+    "dotenv": "^16.0.0",
     "puffgres": "^0.1.0"
   }
 }

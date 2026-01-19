@@ -13,9 +13,12 @@
   },
   "bin": {
     "puffgres": "./dist/cli.js",
-    "puffgres-transform": "./dist/transform-executor.js"
+    "puffgres-transform": "./dist/transform-executor.js",
+    "puffgres-test-transform": "./dist/test-transform-runner.js"
   },
   "scripts": {
+    "start": "node ./dist/cli.js run",
+    "test-transform-runner": "tsx ./src/test-transform-runner.ts",
     "build": "tsc",
     "build:native": "cd native && cargo build --release && node ../scripts/copy-native.js",
     "build:all": "npm run build && npm run build:native",
@@ -51,12 +54,15 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@faker-js/faker": "^9.0.0",
+    "dotenv": "^16.0.0",
+    "pg": "^8.0.0",
+    "toml": "^3.0.0",
     "tsx": "^4.7.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/pg": "^8.0.0",
-    "pg": "^8.0.0",
     "typescript": "^5.0.0"
   }
 }
