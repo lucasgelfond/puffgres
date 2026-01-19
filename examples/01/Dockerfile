@@ -16,6 +16,9 @@ RUN git clone https://github.com/lucasgelfond/puffgres.git . && \
 # Runtime stage
 FROM node:22-slim
 
+# Install OpenSSL runtime library
+RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+
 # Copy the built binary from builder
 COPY --from=builder /usr/local/bin/puffgres /usr/local/bin/puffgres
 
