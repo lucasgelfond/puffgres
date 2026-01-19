@@ -62,8 +62,8 @@ export default async function transform(
     }
 
     const row = event.new!;
-    const combinedText = [row.ocr_result].filter(Boolean).join(' ');
-    const truncatedText = truncateToTokens(combinedText, 512);
+    const combinedText = [row.content].filter(Boolean).join(' ');
+    const truncatedText = truncateToTokens(combinedText, 500);
 
     upsertRows.push({ index: i, id, row, text: truncatedText });
   }
@@ -82,14 +82,14 @@ export default async function transform(
       id: r.id,
       doc: {
         id: r.row.id,
-        ocr_result: r.row.ocr_result,
+        // Add your fields here
         vector: embeddings[i],
       },
       distance_metric: 'cosine_distance' as const,
     },
   }));
 
-  // Merge and sort by original index
+  // Merge and sort by original index to preserve order
   const allActions = [...deleteActions, ...upsertActions]
     .sort((a, b) => a.index - b.index)
     .map(a => a.action);

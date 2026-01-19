@@ -1,7 +1,7 @@
-# Migration for pagebatchembed table
+# Migration for pageembedinbatch table
 version = 1
-mapping_name = "pagebatchembed_public"
-namespace = "pagebatchembed"
+mapping_name = "pageembedinbatch_public"
+namespace = "pageembedinbatch"
 
 [source]
 schema = "public"
@@ -21,4 +21,4 @@ mode = "source_lsn"
 
 [transform]
 type = "js"
-path = "./puffgres/transforms/pagebatchembed.ts"
+path = "./puffgres/transforms/pageembedinbatch.ts"
