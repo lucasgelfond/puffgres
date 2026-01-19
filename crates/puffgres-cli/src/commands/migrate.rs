@@ -7,7 +7,9 @@ use puffgres_pg::{MigrationTracker, PostgresStateStore};
 use tracing::info;
 
 use crate::config::ProjectConfig;
-use crate::validation::{store_transform, validate_no_unreferenced_transforms, validate_transforms};
+use crate::validation::{
+    store_transform, validate_no_unreferenced_transforms, validate_transforms,
+};
 
 pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
     info!("Checking migrations");
@@ -33,7 +35,12 @@ pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
     // Validate that all referenced tables exist before proceeding
     for migration in &local {
         let migration_config = puffgres_config::MigrationConfig::parse(&migration.content)
-            .with_context(|| format!("Failed to parse migration v{} '{}'", migration.version, migration.mapping_name))?;
+            .with_context(|| {
+                format!(
+                    "Failed to parse migration v{} '{}'",
+                    migration.version, migration.mapping_name
+                )
+            })?;
 
         let schema = &migration_config.source.schema;
         let table = &migration_config.source.table;
@@ -118,7 +125,11 @@ pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
     for migration in &local {
         // Store the migration content
         store
-            .store_migration_content(migration.version, &migration.mapping_name, &migration.content)
+            .store_migration_content(
+                migration.version,
+                &migration.mapping_name,
+                &migration.content,
+            )
             .await?;
 
         // Check if this migration has a transform with a path
@@ -138,6 +149,9 @@ pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
         }
     }
 
-    println!("\n{}", format!("Applied {} migration(s).", applied.len()).green());
+    println!(
+        "\n{}",
+        format!("Applied {} migration(s).", applied.len()).green()
+    );
     Ok(())
 }

@@ -80,7 +80,10 @@ pub async fn cmd_dangerously_reset_turbopuffer(config: ProjectConfig) -> Result<
         println!("  • {}", ns);
     }
     println!();
-    println!("{}", "All data in these namespaces will be permanently deleted!".red());
+    println!(
+        "{}",
+        "All data in these namespaces will be permanently deleted!".red()
+    );
     println!("You may need to recreate these, redo backfills, or lose data in the process.");
     println!();
 

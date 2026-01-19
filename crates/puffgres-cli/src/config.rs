@@ -65,7 +65,12 @@ impl ProjectConfig {
             if let Some(end) = result[start..].find('}') {
                 let var_name = &result[start + 2..start + end];
                 let value = std::env::var(var_name).unwrap_or_default();
-                result = format!("{}{}{}", &result[..start], value, &result[start + end + 1..]);
+                result = format!(
+                    "{}{}{}",
+                    &result[..start],
+                    value,
+                    &result[start + end + 1..]
+                );
             } else {
                 break;
             }
@@ -97,7 +102,12 @@ impl ProjectConfig {
                 let var_name = &result[start + 2..start + end];
                 match std::env::var(var_name) {
                     Ok(value) if !value.is_empty() => {
-                        result = format!("{}{}{}", &result[..start], value, &result[start + end + 1..]);
+                        result = format!(
+                            "{}{}{}",
+                            &result[..start],
+                            value,
+                            &result[start + end + 1..]
+                        );
                     }
                     _ => {
                         missing_vars.push(var_name.to_string());
@@ -247,7 +257,10 @@ mod tests {
         };
 
         assert_eq!(config.resolve_env("${TEST_VAR}"), "hello");
-        assert_eq!(config.resolve_env("prefix_${TEST_VAR}_suffix"), "prefix_hello_suffix");
+        assert_eq!(
+            config.resolve_env("prefix_${TEST_VAR}_suffix"),
+            "prefix_hello_suffix"
+        );
         assert_eq!(config.resolve_env("no_vars"), "no_vars");
     }
 }

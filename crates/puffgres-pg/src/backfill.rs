@@ -296,13 +296,11 @@ fn row_to_value(row: &Row, index: usize) -> PgResult<Value> {
             let v: Option<String> = row.get(index);
             Ok(v.map(Value::String).unwrap_or(Value::Null))
         }
-        "uuid" => {
-            match row.try_get::<_, Option<uuid::Uuid>>(index) {
-                Ok(Some(u)) => Ok(Value::String(u.to_string())),
-                Ok(None) => Ok(Value::Null),
-                Err(_) => Ok(Value::Null),
-            }
-        }
+        "uuid" => match row.try_get::<_, Option<uuid::Uuid>>(index) {
+            Ok(Some(u)) => Ok(Value::String(u.to_string())),
+            Ok(None) => Ok(Value::Null),
+            Err(_) => Ok(Value::Null),
+        },
         "timestamp" | "timestamptz" | "date" | "time" | "timetz" => {
             // Convert timestamps to string representation
             match row.try_get::<_, Option<chrono::DateTime<chrono::Utc>>>(index) {
@@ -338,9 +336,7 @@ fn json_to_value(v: serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(s) => Value::String(s),
-        serde_json::Value::Array(arr) => {
-            Value::Array(arr.into_iter().map(json_to_value).collect())
-        }
+        serde_json::Value::Array(arr) => Value::Array(arr.into_iter().map(json_to_value).collect()),
         serde_json::Value::Object(obj) => Value::Object(
             obj.into_iter()
                 .map(|(k, v)| (k, json_to_value(v)))

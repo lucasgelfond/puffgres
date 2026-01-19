@@ -188,9 +188,7 @@ export default async function transform(
     if root_gitignore.exists() {
         let content = fs::read_to_string(root_gitignore)?;
         if !content.contains(".env") {
-            let mut file = fs::OpenOptions::new()
-                .append(true)
-                .open(root_gitignore)?;
+            let mut file = fs::OpenOptions::new().append(true).open(root_gitignore)?;
             writeln!(file, "\n# Puffgres secrets\n.env")?;
             println!("Added .env to .gitignore");
         }

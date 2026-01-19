@@ -42,13 +42,13 @@ pub enum Commands {
         #[arg(long, default_value = "puffgres")]
         slot: String,
 
+        /// Publication name for logical replication
+        #[arg(long, default_value = "puffgres_pub")]
+        publication: String,
+
         /// Create the replication slot if it doesn't exist
         #[arg(long, default_value = "true")]
         create_slot: bool,
-
-        /// Poll interval in milliseconds
-        #[arg(long, default_value = "1000")]
-        poll_interval_ms: u64,
 
         /// Skip auto-applying pending migrations
         #[arg(long)]

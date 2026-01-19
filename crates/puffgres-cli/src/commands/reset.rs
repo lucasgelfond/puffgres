@@ -48,7 +48,10 @@ pub async fn cmd_reset(config: ProjectConfig) -> Result<()> {
         for entry in fs::read_dir("puffgres/transforms")? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "ts" || ext == "js") {
+            if path
+                .extension()
+                .map_or(false, |ext| ext == "ts" || ext == "js")
+            {
                 fs::remove_file(&path)?;
                 println!("Removed {}", path.display());
             }
@@ -57,7 +60,10 @@ pub async fn cmd_reset(config: ProjectConfig) -> Result<()> {
 
     // Write migrations from database
     if migration_content.is_empty() {
-        println!("{}", "Note: Migration content not found in database.".yellow());
+        println!(
+            "{}",
+            "Note: Migration content not found in database.".yellow()
+        );
         println!("Applied migrations (content not stored - run 'puffgres migrate' to store):");
         for m in &applied {
             println!(
@@ -70,7 +76,11 @@ pub async fn cmd_reset(config: ProjectConfig) -> Result<()> {
     } else {
         println!("Restoring migrations from database:");
         for (version, mapping_name, content) in migration_content {
-            let filename = format!("{:04}_{}.toml", version, mapping_name.replace("_public", ""));
+            let filename = format!(
+                "{:04}_{}.toml",
+                version,
+                mapping_name.replace("_public", "")
+            );
             let path = format!("puffgres/migrations/{}", filename);
             fs::write(&path, &content)?;
             println!("  Restored {}", path);

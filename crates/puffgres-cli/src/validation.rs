@@ -41,13 +41,12 @@ pub async fn validate_all_tables_exist(
     migrations: &[LocalMigration],
 ) -> Result<()> {
     for migration in migrations {
-        let config = MigrationConfig::parse(&migration.content)
-            .with_context(|| {
-                format!(
-                    "Failed to parse migration v{} '{}'",
-                    migration.version, migration.mapping_name
-                )
-            })?;
+        let config = MigrationConfig::parse(&migration.content).with_context(|| {
+            format!(
+                "Failed to parse migration v{} '{}'",
+                migration.version, migration.mapping_name
+            )
+        })?;
 
         validate_table_exists(
             store,
@@ -66,13 +65,12 @@ pub fn get_referenced_transforms(migrations: &[LocalMigration]) -> Result<HashSe
     let mut referenced = HashSet::new();
 
     for migration in migrations {
-        let config = MigrationConfig::parse(&migration.content)
-            .with_context(|| {
-                format!(
-                    "Failed to parse migration v{} '{}'",
-                    migration.version, migration.mapping_name
-                )
-            })?;
+        let config = MigrationConfig::parse(&migration.content).with_context(|| {
+            format!(
+                "Failed to parse migration v{} '{}'",
+                migration.version, migration.mapping_name
+            )
+        })?;
 
         if let Some(path) = &config.transform.path {
             // Normalize the path
@@ -114,10 +112,7 @@ pub fn validate_no_unreferenced_transforms(migrations: &[LocalMigration]) -> Res
         }
 
         // Check if this file is referenced
-        let relative_path = format!(
-            "transforms/{}",
-            path.file_name().unwrap().to_string_lossy()
-        );
+        let relative_path = format!("transforms/{}", path.file_name().unwrap().to_string_lossy());
 
         if !referenced.contains(&relative_path) {
             unreferenced.push(path.display().to_string());
@@ -139,7 +134,10 @@ pub fn validate_no_unreferenced_transforms(migrations: &[LocalMigration]) -> Res
 }
 
 /// Validate that transforms haven't been modified since they were stored.
-pub async fn validate_transforms(_config: &ProjectConfig, store: &PostgresStateStore) -> Result<()> {
+pub async fn validate_transforms(
+    _config: &ProjectConfig,
+    store: &PostgresStateStore,
+) -> Result<()> {
     // Get stored transforms from database
     let stored = store.get_all_transforms().await?;
 
@@ -210,7 +208,11 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-    fn create_test_migration(name: &str, table: &str, transform_path: Option<&str>) -> LocalMigration {
+    fn create_test_migration(
+        name: &str,
+        table: &str,
+        transform_path: Option<&str>,
+    ) -> LocalMigration {
         let transform_section = transform_path
             .map(|p| format!("\n[transform]\npath = \"{}\"", p))
             .unwrap_or_default();
@@ -326,7 +328,15 @@ mode = "source_lsn"
         assert!(result.is_err());
         let err = result.unwrap_err();
         let err_msg = err.to_string();
-        assert!(err_msg.contains("unreferenced transform"), "Error: {}", err_msg);
-        assert!(err_msg.contains("orphan"), "Error should mention 'orphan': {}", err_msg);
+        assert!(
+            err_msg.contains("unreferenced transform"),
+            "Error: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("orphan"),
+            "Error should mention 'orphan': {}",
+            err_msg
+        );
     }
 }

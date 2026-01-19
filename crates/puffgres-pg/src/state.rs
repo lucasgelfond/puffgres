@@ -75,9 +75,10 @@ pub struct PostgresStateStore {
 impl PostgresStateStore {
     /// Create a new state store and connect to Postgres.
     pub async fn connect(connection_string: &str) -> PgResult<Self> {
-        let (client, connection) = tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
-            .await
-            .map_err(|e| PgError::Connection(e.to_string()))?;
+        let (client, connection) =
+            tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
+                .await
+                .map_err(|e| PgError::Connection(e.to_string()))?;
 
         // Spawn connection handler
         tokio::spawn(async move {
@@ -243,7 +244,11 @@ impl PostgresStateStore {
     }
 
     /// Save a checkpoint for a mapping.
-    pub async fn save_checkpoint(&self, mapping_name: &str, checkpoint: &Checkpoint) -> PgResult<()> {
+    pub async fn save_checkpoint(
+        &self,
+        mapping_name: &str,
+        checkpoint: &Checkpoint,
+    ) -> PgResult<()> {
         self.client
             .execute(
                 r#"
@@ -298,10 +303,7 @@ impl PostgresStateStore {
     pub async fn get_min_lsn(&self) -> PgResult<Option<u64>> {
         let row = self
             .client
-            .query_opt(
-                "SELECT MIN(lsn) FROM __puffgres_checkpoints",
-                &[],
-            )
+            .query_opt("SELECT MIN(lsn) FROM __puffgres_checkpoints", &[])
             .await
             .map_err(|e| PgError::Postgres(e.to_string()))?;
 
@@ -533,9 +535,7 @@ impl PostgresStateStore {
                 )
                 .await
         } else {
-            self.client
-                .execute("DELETE FROM __puffgres_dlq", &[])
-                .await
+            self.client.execute("DELETE FROM __puffgres_dlq", &[]).await
         }
         .map_err(|e| PgError::Postgres(e.to_string()))?;
 
@@ -547,7 +547,10 @@ impl PostgresStateStore {
     // -------------------------------------------------------------------------
 
     /// Get backfill progress for a mapping.
-    pub async fn get_backfill_progress(&self, mapping_name: &str) -> PgResult<Option<BackfillProgress>> {
+    pub async fn get_backfill_progress(
+        &self,
+        mapping_name: &str,
+    ) -> PgResult<Option<BackfillProgress>> {
         let row = self
             .client
             .query_opt(

@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -14,8 +13,8 @@ use crate::validation::{store_transform, validate_transforms};
 pub async fn cmd_run(
     config: ProjectConfig,
     slot: &str,
+    publication: &str,
     create_slot: bool,
-    poll_interval_ms: u64,
     skip_migrate: bool,
 ) -> Result<()> {
     info!("Starting puffgres CDC replication");
@@ -34,7 +33,12 @@ pub async fn cmd_run(
     // Validate that all referenced tables exist before proceeding
     for migration in &local {
         let migration_config = puffgres_config::MigrationConfig::parse(&migration.content)
-            .with_context(|| format!("Failed to parse migration v{} '{}'", migration.version, migration.mapping_name))?;
+            .with_context(|| {
+                format!(
+                    "Failed to parse migration v{} '{}'",
+                    migration.version, migration.mapping_name
+                )
+            })?;
 
         let schema = &migration_config.source.schema;
         let table = &migration_config.source.table;
@@ -98,7 +102,11 @@ pub async fn cmd_run(
             // Store migration content and transforms
             for migration in &local {
                 store
-                    .store_migration_content(migration.version, &migration.mapping_name, &migration.content)
+                    .store_migration_content(
+                        migration.version,
+                        &migration.mapping_name,
+                        &migration.content,
+                    )
                     .await?;
 
                 let migration_config = puffgres_config::MigrationConfig::parse(&migration.content)?;
@@ -117,7 +125,10 @@ pub async fn cmd_run(
                 }
             }
 
-            println!("{}", format!("Applied {} migration(s).", applied.len()).green());
+            println!(
+                "{}",
+                format!("Applied {} migration(s).", applied.len()).green()
+            );
         }
     } else {
         // Just validate, don't apply
@@ -129,12 +140,5 @@ pub async fn cmd_run(
     info!(count = migrations.len(), "Loaded migrations");
 
     // Run the CDC loop
-    runner::run_cdc_loop(
-        &config,
-        migrations,
-        slot,
-        create_slot,
-        Duration::from_millis(poll_interval_ms),
-    )
-    .await
+    runner::run_cdc_loop(&config, migrations, slot, publication, create_slot).await
 }

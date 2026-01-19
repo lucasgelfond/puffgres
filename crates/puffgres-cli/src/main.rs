@@ -51,12 +51,12 @@ async fn main() -> Result<()> {
         }
         Commands::Run {
             slot,
+            publication,
             create_slot,
-            poll_interval_ms,
             skip_migrate,
         } => {
             let config = load_config(&cli.config)?;
-            commands::cmd_run(config, &slot, create_slot, poll_interval_ms, skip_migrate).await
+            commands::cmd_run(config, &slot, &publication, create_slot, skip_migrate).await
         }
         Commands::Status => {
             let config = load_config(&cli.config)?;

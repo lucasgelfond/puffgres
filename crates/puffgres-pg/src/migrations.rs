@@ -88,16 +88,14 @@ impl<'a> MigrationTracker<'a> {
             let hash = migration.content_hash();
 
             // Check if this migration is already applied
-            if let Some(existing) = applied
-                .iter()
-                .find(|a| a.version == migration.version && a.mapping_name == migration.mapping_name)
-            {
+            if let Some(existing) = applied.iter().find(|a| {
+                a.version == migration.version && a.mapping_name == migration.mapping_name
+            }) {
                 if existing.content_hash == hash {
                     // Match - all good
-                    status.applied.push(format!(
-                        "v{} {}",
-                        migration.version, migration.mapping_name
-                    ));
+                    status
+                        .applied
+                        .push(format!("v{} {}", migration.version, migration.mapping_name));
                 } else {
                     // Hash mismatch - this is an error
                     status.mismatched.push(MigrationMismatch {
@@ -109,10 +107,9 @@ impl<'a> MigrationTracker<'a> {
                 }
             } else {
                 // Not applied yet - pending
-                status.pending.push(format!(
-                    "v{} {}",
-                    migration.version, migration.mapping_name
-                ));
+                status
+                    .pending
+                    .push(format!("v{} {}", migration.version, migration.mapping_name));
             }
         }
 

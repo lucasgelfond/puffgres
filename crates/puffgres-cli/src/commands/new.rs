@@ -8,9 +8,7 @@ use dialoguer::Input;
 pub async fn cmd_new(name: Option<String>) -> Result<()> {
     // Check that puffgres is initialized
     if !Path::new("puffgres/migrations").exists() {
-        anyhow::bail!(
-            "puffgres is not initialized in this directory. Run 'puffgres init' first."
-        );
+        anyhow::bail!("puffgres is not initialized in this directory. Run 'puffgres init' first.");
     }
 
     // Get the migration name

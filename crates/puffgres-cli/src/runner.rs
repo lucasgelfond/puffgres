@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tracing::{debug, error, info, warn};
@@ -8,22 +7,9 @@ use puffgres_core::{
     extract_id, Action, Batcher, DocumentId, IdentityTransformer, JsTransformer, Mapping, Router,
     TransformType, Transformer, Value, WriteRequest,
 };
-use puffgres_pg::{
-    format_lsn, PollerConfig, PostgresStateStore, StreamingConfig, StreamingReplicator,
-    Wal2JsonPoller,
-};
+use puffgres_pg::{format_lsn, PostgresStateStore, ReplicationStream, ReplicationStreamConfig};
 
 use crate::config::ProjectConfig;
-
-/// Replication mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum ReplicationMode {
-    /// Polling mode: periodically fetch changes.
-    Polling,
-    /// Streaming mode: use peek/acknowledge pattern for at-least-once delivery.
-    Streaming,
-}
 
 /// Wrapper for different transformer types.
 enum MappingTransformer {
@@ -59,57 +45,17 @@ fn create_transformer(mapping: &Mapping) -> MappingTransformer {
     }
 }
 
-/// Run the CDC replication loop.
+/// Run the CDC replication loop using true push-based streaming.
+///
+/// This uses pgwire-replication to receive changes in real-time via the
+/// PostgreSQL streaming replication protocol. Changes arrive immediately
+/// as they're committed - no polling required.
 pub async fn run_cdc_loop(
     config: &ProjectConfig,
     mappings: Vec<Mapping>,
     slot: &str,
+    publication: &str,
     create_slot: bool,
-    poll_interval: Duration,
-) -> Result<()> {
-    run_cdc_loop_with_mode(
-        config,
-        mappings,
-        slot,
-        create_slot,
-        poll_interval,
-        ReplicationMode::Streaming,
-    )
-    .await
-}
-
-/// Run the CDC replication loop with explicit mode selection.
-pub async fn run_cdc_loop_with_mode(
-    config: &ProjectConfig,
-    mappings: Vec<Mapping>,
-    slot: &str,
-    create_slot: bool,
-    poll_interval: Duration,
-    mode: ReplicationMode,
-) -> Result<()> {
-    match mode {
-        ReplicationMode::Polling => {
-            run_polling_loop(config, mappings, slot, create_slot, poll_interval).await
-        }
-        ReplicationMode::Streaming => {
-            run_streaming_loop(config, mappings, slot, create_slot, poll_interval).await
-        }
-    }
-}
-
-/// Run using streaming replication with proper acknowledgment.
-///
-/// This mode uses peek/acknowledge pattern for at-least-once delivery:
-/// 1. Peek at changes (without consuming)
-/// 2. Process and write to turbopuffer
-/// 3. Save checkpoint to Postgres
-/// 4. Acknowledge changes (consume from slot)
-async fn run_streaming_loop(
-    config: &ProjectConfig,
-    mappings: Vec<Mapping>,
-    slot: &str,
-    create_slot: bool,
-    poll_interval: Duration,
 ) -> Result<()> {
     // State is stored in Postgres __puffgres_* tables
     let state_store = PostgresStateStore::connect(&config.postgres_connection_string()?)
@@ -126,25 +72,27 @@ async fn run_streaming_loop(
         None
     };
 
-    // Initialize streaming replicator
-    let streaming_config = StreamingConfig {
+    // Build list of tables for publication
+    let publication_tables: Vec<String> = mappings
+        .iter()
+        .map(|m| format!("{}.{}", m.source.schema, m.source.table))
+        .collect();
+
+    // Initialize streaming replication
+    let repl_config = ReplicationStreamConfig {
         connection_string: config.postgres_connection_string()?,
         slot_name: slot.to_string(),
+        publication_name: publication.to_string(),
         create_slot,
+        create_publication: true,
+        publication_tables,
         start_lsn,
-        keepalive_interval: Duration::from_secs(10),
-        receive_timeout: Duration::from_secs(30),
+        ..Default::default()
     };
 
-    let mut replicator = StreamingReplicator::connect(streaming_config)
+    let mut stream = ReplicationStream::connect(repl_config)
         .await
         .context("Failed to connect for streaming replication")?;
-
-    // Resume from checkpoint if we have one
-    if let Some(lsn) = start_lsn {
-        info!(lsn = format_lsn(lsn), "Resuming from checkpoint");
-        replicator.resume_from(lsn);
-    }
 
     let tp_client = rs_puff::Client::new(config.turbopuffer_api_key()?);
     let router = Router::new(mappings.clone());
@@ -156,31 +104,23 @@ async fn run_streaming_loop(
 
     info!(
         slot = slot,
+        publication = publication,
         mappings = mappings.len(),
-        mode = "streaming",
-        "Starting CDC loop"
+        "Starting push-based streaming CDC"
     );
 
     let mut total_events: u64 = 0;
     let mut batchers: HashMap<String, Batcher> = HashMap::new();
 
-    loop {
-        // Poll for batch of changes (peek without consuming)
-        let batch = match replicator.poll_batch(1000).await {
-            Ok(b) => b,
-            Err(e) => {
-                error!(error = %e, "Failed to poll for changes");
-                tokio::time::sleep(poll_interval).await;
-                continue;
-            }
-        };
-
+    // Main streaming loop - events arrive as they happen (no polling)
+    while let Some(batch) = stream.recv_batch().await? {
         if batch.events.is_empty() {
-            tokio::time::sleep(poll_interval).await;
+            // Empty transaction (e.g., only system tables changed)
+            stream.acknowledge(batch.ack_lsn);
             continue;
         }
 
-        debug!(count = batch.events.len(), "Processing streaming batch");
+        debug!(count = batch.events.len(), "Processing transaction batch");
 
         // Process each event
         for event in &batch.events {
@@ -247,154 +187,19 @@ async fn run_streaming_loop(
         }
 
         // Acknowledge after successful processing
-        // This is the key difference from polling - we only consume changes
-        // after we've successfully written them to turbopuffer and saved checkpoint
-        if let Err(e) = replicator.acknowledge(batch.ack_lsn).await {
-            error!(
-                lsn = format_lsn(batch.ack_lsn),
-                error = %e,
-                "Failed to acknowledge changes"
-            );
-        }
+        stream.acknowledge(batch.ack_lsn);
 
         if total_events % 100 == 0 && total_events > 0 {
             info!(
                 total_events = total_events,
-                lsn = format_lsn(replicator.current_lsn()),
+                lsn = format_lsn(stream.ack_lsn()),
                 "Progress"
             );
         }
-
-        tokio::time::sleep(poll_interval).await;
     }
-}
 
-/// Run using simple polling mode (original behavior).
-async fn run_polling_loop(
-    config: &ProjectConfig,
-    mappings: Vec<Mapping>,
-    slot: &str,
-    create_slot: bool,
-    poll_interval: Duration,
-) -> Result<()> {
-    let pg_config = PollerConfig {
-        connection_string: config.postgres_connection_string()?,
-        slot_name: slot.to_string(),
-        create_slot,
-        max_changes: 1000,
-    };
-
-    let poller = Wal2JsonPoller::connect(pg_config)
-        .await
-        .context("Failed to connect to Postgres")?;
-
-    let state_store = PostgresStateStore::connect(&config.postgres_connection_string()?)
-        .await
-        .context("Failed to connect to state store")?;
-
-    let tp_client = rs_puff::Client::new(config.turbopuffer_api_key()?);
-    let router = Router::new(mappings.clone());
-
-    let transformers: Vec<_> = mappings
-        .iter()
-        .map(|m| (m.name.clone(), create_transformer(m)))
-        .collect();
-
-    info!(
-        slot = slot,
-        mappings = mappings.len(),
-        mode = "polling",
-        "Starting CDC loop"
-    );
-
-    let mut total_events: u64 = 0;
-    let mut batchers: HashMap<String, Batcher> = HashMap::new();
-
-    loop {
-        let events = match poller.poll().await {
-            Ok(events) => events,
-            Err(e) => {
-                error!(error = %e, "Failed to poll for changes");
-                tokio::time::sleep(poll_interval).await;
-                continue;
-            }
-        };
-
-        if events.is_empty() {
-            tokio::time::sleep(poll_interval).await;
-            continue;
-        }
-
-        debug!(count = events.len(), "Processing events");
-
-        for event in &events {
-            let matched = router.route(event);
-
-            for mapping in matched {
-                let batcher = batchers
-                    .entry(mapping.namespace.clone())
-                    .or_insert_with(|| Batcher::new(mapping.batching.clone()));
-
-                let transformer = transformers
-                    .iter()
-                    .find(|(name, _)| name == &mapping.name)
-                    .map(|(_, t)| t)
-                    .unwrap();
-
-                let id = match extract_id(event, &mapping.id.column, mapping.id.id_type) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        warn!(mapping = %mapping.name, error = %e, "Failed to extract ID");
-                        continue;
-                    }
-                };
-
-                let action = match transformer.transform(event, id) {
-                    Ok(action) => action,
-                    Err(e) => {
-                        warn!(mapping = %mapping.name, error = %e, "Transform failed");
-                        continue;
-                    }
-                };
-
-                if !action.requires_write() {
-                    continue;
-                }
-
-                if let Some(batch) = batcher.add(&mapping.namespace, action, event.lsn) {
-                    let request = WriteRequest::from_batch(batch);
-                    if let Err(e) =
-                        flush_batch(&tp_client, &state_store, &mapping.name, request).await
-                    {
-                        error!(mapping = %mapping.name, error = %e, "Failed to flush batch");
-                    }
-                }
-            }
-        }
-
-        total_events += events.len() as u64;
-
-        for (namespace, batcher) in &mut batchers {
-            for batch in batcher.flush_all() {
-                let request = WriteRequest::from_batch(batch);
-                let mapping_name = mappings
-                    .iter()
-                    .find(|m| &m.namespace == namespace)
-                    .map(|m| m.name.as_str())
-                    .unwrap_or(namespace);
-
-                if let Err(e) = flush_batch(&tp_client, &state_store, mapping_name, request).await {
-                    error!(namespace = %namespace, error = %e, "Failed to flush batch");
-                }
-            }
-        }
-
-        if total_events % 100 == 0 && total_events > 0 {
-            info!(total_events = total_events, "Progress");
-        }
-
-        tokio::time::sleep(poll_interval).await;
-    }
+    info!("Replication stream ended");
+    Ok(())
 }
 
 async fn flush_batch(
@@ -420,42 +225,36 @@ async fn flush_batch(
     );
 
     // Build upsert rows
-    let upsert_rows: Option<Vec<HashMap<String, serde_json::Value>>> =
-        if request.upserts.is_empty() {
-            None
-        } else {
-            Some(
-                request
-                    .upserts
-                    .iter()
-                    .map(|doc| {
-                        let mut row: HashMap<String, serde_json::Value> = doc
-                            .attributes
-                            .iter()
-                            .map(|(k, v)| (k.clone(), convert_value_to_json(v)))
-                            .collect();
-                        row.insert("id".to_string(), convert_doc_id_to_json(&doc.id));
-                        row.insert(
-                            "__source_lsn".to_string(),
-                            serde_json::Value::Number(request.lsn.into()),
-                        );
-                        row
-                    })
-                    .collect(),
-            )
-        };
+    let upsert_rows: Option<Vec<HashMap<String, serde_json::Value>>> = if request.upserts.is_empty()
+    {
+        None
+    } else {
+        Some(
+            request
+                .upserts
+                .iter()
+                .map(|doc| {
+                    let mut row: HashMap<String, serde_json::Value> = doc
+                        .attributes
+                        .iter()
+                        .map(|(k, v)| (k.clone(), convert_value_to_json(v)))
+                        .collect();
+                    row.insert("id".to_string(), convert_doc_id_to_json(&doc.id));
+                    row.insert(
+                        "__source_lsn".to_string(),
+                        serde_json::Value::Number(request.lsn.into()),
+                    );
+                    row
+                })
+                .collect(),
+        )
+    };
 
     // Build delete IDs
     let deletes: Option<Vec<serde_json::Value>> = if request.deletes.is_empty() {
         None
     } else {
-        Some(
-            request
-                .deletes
-                .iter()
-                .map(convert_doc_id_to_json)
-                .collect(),
-        )
+        Some(request.deletes.iter().map(convert_doc_id_to_json).collect())
     };
 
     let params = rs_puff::WriteParams {

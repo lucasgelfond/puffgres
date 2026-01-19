@@ -14,7 +14,7 @@ pub enum PgError {
     #[error("failed to create replication slot: {0}")]
     SlotCreationFailed(String),
 
-    #[error("wal2json parse error: {0}")]
+    #[error("parse error: {0}")]
     ParseError(String),
 
     #[error("json error: {0}")]
@@ -25,6 +25,21 @@ pub enum PgError {
 
     #[error("table '{schema}.{table}' does not exist in the database")]
     TableNotFound { schema: String, table: String },
+
+    #[error("pgoutput decode error: {0}")]
+    PgOutput(String),
+
+    #[error("replication error: {0}")]
+    Replication(String),
+
+    #[error("relation {0} not found in cache (missing Relation message)")]
+    RelationNotFound(u32),
+
+    #[error("publication '{0}' does not exist")]
+    PublicationNotFound(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl From<tokio_postgres::Error> for PgError {

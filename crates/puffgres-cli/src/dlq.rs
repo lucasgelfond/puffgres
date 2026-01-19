@@ -71,16 +71,31 @@ pub async fn cmd_dlq_show(store: &PostgresStateStore, id: i32) -> Result<()> {
     println!("{:-<60}", "");
     println!("Mapping:      {}", entry.mapping_name);
     println!("LSN:          {}", entry.lsn);
-    println!("Error Kind:   {} ({})", error_kind.description(), entry.error_kind);
-    println!("Retryable:    {}", if error_kind.is_retryable() { "yes" } else { "no" });
+    println!(
+        "Error Kind:   {} ({})",
+        error_kind.description(),
+        entry.error_kind
+    );
+    println!(
+        "Retryable:    {}",
+        if error_kind.is_retryable() {
+            "yes"
+        } else {
+            "no"
+        }
+    );
     println!("Retry Count:  {}", entry.retry_count);
-    println!("Created:      {}", entry.created_at.format("%Y-%m-%d %H:%M:%S %Z"));
+    println!(
+        "Created:      {}",
+        entry.created_at.format("%Y-%m-%d %H:%M:%S %Z")
+    );
     println!("\nError Message:");
     println!("  {}", entry.error_message);
     println!("\nEvent JSON:");
     println!(
         "{}",
-        serde_json::to_string_pretty(&entry.event_json).unwrap_or_else(|_| entry.event_json.to_string())
+        serde_json::to_string_pretty(&entry.event_json)
+            .unwrap_or_else(|_| entry.event_json.to_string())
     );
 
     Ok(())
@@ -116,7 +131,11 @@ pub async fn cmd_dlq_retry(
 
         store.increment_dlq_retry(entry_id).await?;
         info!(id = entry_id, "Marked DLQ entry for retry");
-        println!("Marked entry {} for retry (retry count: {})", entry_id, entry.retry_count + 1);
+        println!(
+            "Marked entry {} for retry (retry count: {})",
+            entry_id,
+            entry.retry_count + 1
+        );
 
         // TODO: Actually reprocess the event through the pipeline
         // For now, we just increment the retry count

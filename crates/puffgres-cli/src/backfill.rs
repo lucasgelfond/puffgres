@@ -10,8 +10,7 @@ use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
 use puffgres_core::{
-    extract_id, Batcher, DocumentId, IdentityTransformer, Mapping, Transformer, Value,
-    WriteRequest,
+    extract_id, Batcher, DocumentId, IdentityTransformer, Mapping, Transformer, Value, WriteRequest,
 };
 use puffgres_pg::{BackfillConfig, BackfillScanner, PostgresStateStore};
 
@@ -196,30 +195,27 @@ async fn flush_batch(client: &rs_puff::Client, request: &WriteRequest) -> Result
     );
 
     // Build upsert rows
-    let upsert_rows: Option<Vec<HashMap<String, serde_json::Value>>> =
-        if request.upserts.is_empty() {
-            None
-        } else {
-            Some(
-                request
-                    .upserts
-                    .iter()
-                    .map(|doc| {
-                        let mut row: HashMap<String, serde_json::Value> = doc
-                            .attributes
-                            .iter()
-                            .map(|(k, v)| (k.clone(), convert_value_to_json(v)))
-                            .collect();
-                        row.insert("id".to_string(), convert_doc_id_to_json(&doc.id));
-                        row.insert(
-                            "__backfill".to_string(),
-                            serde_json::Value::Bool(true),
-                        );
-                        row
-                    })
-                    .collect(),
-            )
-        };
+    let upsert_rows: Option<Vec<HashMap<String, serde_json::Value>>> = if request.upserts.is_empty()
+    {
+        None
+    } else {
+        Some(
+            request
+                .upserts
+                .iter()
+                .map(|doc| {
+                    let mut row: HashMap<String, serde_json::Value> = doc
+                        .attributes
+                        .iter()
+                        .map(|(k, v)| (k.clone(), convert_value_to_json(v)))
+                        .collect();
+                    row.insert("id".to_string(), convert_doc_id_to_json(&doc.id));
+                    row.insert("__backfill".to_string(), serde_json::Value::Bool(true));
+                    row
+                })
+                .collect(),
+        )
+    };
 
     let params = rs_puff::WriteParams {
         upsert_rows,

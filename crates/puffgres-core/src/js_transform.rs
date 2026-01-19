@@ -77,8 +77,9 @@ impl JsTransformer {
 
         // Parse the result
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let result: serde_json::Value = serde_json::from_str(&stdout)
-            .map_err(|e| Error::TransformError(format!("Failed to parse transform result: {}", e)))?;
+        let result: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| {
+            Error::TransformError(format!("Failed to parse transform result: {}", e))
+        })?;
 
         // Convert the result to an Action
         parse_action(&result, id)
@@ -124,10 +125,9 @@ fn parse_action(result: &serde_json::Value, default_id: DocumentId) -> Result<Ac
     match action_type {
         "upsert" => {
             let id = parse_id(obj.get("id"), default_id)?;
-            let doc = obj
-                .get("doc")
-                .and_then(|v| v.as_object())
-                .ok_or_else(|| Error::TransformError("Upsert action must have a 'doc' field".into()))?;
+            let doc = obj.get("doc").and_then(|v| v.as_object()).ok_or_else(|| {
+                Error::TransformError("Upsert action must have a 'doc' field".into())
+            })?;
 
             let attributes: HashMap<String, Value> = doc
                 .iter()
@@ -186,9 +186,11 @@ fn json_to_value(json: &serde_json::Value) -> Value {
         }
         serde_json::Value::String(s) => Value::String(s.clone()),
         serde_json::Value::Array(arr) => Value::Array(arr.iter().map(json_to_value).collect()),
-        serde_json::Value::Object(obj) => {
-            Value::Object(obj.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect())
-        }
+        serde_json::Value::Object(obj) => Value::Object(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 
