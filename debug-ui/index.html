@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Puffgres Debug UI</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+    h1 { margin-bottom: 20px; }
+    .form-row { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: 500; }
+    input { padding: 8px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; width: 300px; }
+    button { padding: 10px 20px; font-size: 14px; background: #0066cc; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px; }
+    button:hover { background: #0055aa; }
+    button:disabled { background: #999; cursor: not-allowed; }
+    .results { margin-top: 20px; background: white; border: 1px solid #ddd; border-radius: 4px; padding: 15px; }
+    .error { color: #cc0000; background: #ffeeee; padding: 10px; border-radius: 4px; margin-top: 10px; }
+    .status { color: #666; margin-top: 10px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+    th, td { padding: 8px; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #f9f9f9; font-weight: 600; }
+    td { word-break: break-word; max-width: 400px; }
+    pre { background: #f9f9f9; padding: 10px; overflow-x: auto; font-size: 12px; border-radius: 4px; }
+    .count { color: #666; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Puffgres Debug UI</h1>
+
+  <div class="form-row">
+    <label for="namespace">Namespace</label>
+    <input type="text" id="namespace" placeholder="e.g. my-namespace" value="">
+  </div>
+
+  <div class="form-row">
+    <label for="limit">Number of documents</label>
+    <input type="number" id="limit" placeholder="10" value="10" min="1" max="10000">
+  </div>
+
+  <div>
+    <button id="fetch-btn" onclick="fetchDocuments()">Fetch Documents</button>
+    <button id="reload-btn" onclick="fetchDocuments()">Reload</button>
+  </div>
+
+  <div id="status" class="status"></div>
+  <div id="error" class="error" style="display: none;"></div>
+
+  <div id="results" class="results" style="display: none;">
+    <div id="count" class="count"></div>
+    <div id="table-container"></div>
+  </div>
+
+  <script>
+    // Save/load form state
+    const savedNamespace = localStorage.getItem('debug-ui-namespace');
+    if (savedNamespace) document.getElementById('namespace').value = savedNamespace;
+
+    async function fetchDocuments() {
+      const namespace = document.getElementById('namespace').value.trim();
+      const limit = parseInt(document.getElementById('limit').value) || 10;
+
+      if (!namespace) {
+        showError('Please enter a namespace');
+        return;
+      }
+
+      localStorage.setItem('debug-ui-namespace', namespace);
+
+      const statusEl = document.getElementById('status');
+      const errorEl = document.getElementById('error');
+      const resultsEl = document.getElementById('results');
+
+      errorEl.style.display = 'none';
+      resultsEl.style.display = 'none';
+      statusEl.textContent = 'Fetching...';
+
+      document.getElementById('fetch-btn').disabled = true;
+      document.getElementById('reload-btn').disabled = true;
+
+      try {
+        const response = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ namespace, limit })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
+
+        displayResults(data);
+        statusEl.textContent = `Fetched at ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        showError(err.message);
+        statusEl.textContent = '';
+      } finally {
+        document.getElementById('fetch-btn').disabled = false;
+        document.getElementById('reload-btn').disabled = false;
+      }
+    }
+
+    function showError(msg) {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = msg;
+      errorEl.style.display = 'block';
+    }
+
+    function displayResults(data) {
+      const resultsEl = document.getElementById('results');
+      const countEl = document.getElementById('count');
+      const tableEl = document.getElementById('table-container');
+
+      const rows = data.rows || [];
+      countEl.textContent = `Found ${rows.length} document(s)`;
+
+      if (rows.length === 0) {
+        tableEl.innerHTML = '<p>No documents found in this namespace.</p>';
+        resultsEl.style.display = 'block';
+        return;
+      }
+
+      // Collect all attribute keys
+      const allKeys = new Set(['id']);
+      rows.forEach(row => {
+        Object.keys(row).forEach(k => {
+          if (k !== 'vector' && k !== '$dist') allKeys.add(k);
+        });
+      });
+      const keys = Array.from(allKeys);
+
+      // Build table
+      let html = '<table><thead><tr>';
+      keys.forEach(k => html += `<th>${escapeHtml(k)}</th>`);
+      html += '</tr></thead><tbody>';
+
+      rows.forEach(row => {
+        html += '<tr>';
+        keys.forEach(k => {
+          const val = row[k];
+          let display = '';
+          if (val === undefined || val === null) {
+            display = '<span style="color:#999">-</span>';
+          } else if (typeof val === 'object') {
+            display = `<pre>${escapeHtml(JSON.stringify(val, null, 2))}</pre>`;
+          } else {
+            display = escapeHtml(String(val));
+          }
+          html += `<td>${display}</td>`;
+        });
+        html += '</tr>';
+      });
+
+      html += '</tbody></table>';
+      tableEl.innerHTML = html;
+      resultsEl.style.display = 'block';
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>
