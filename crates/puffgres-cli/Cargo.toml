@@ -21,7 +21,7 @@ anyhow = { workspace = true }
 dotenvy = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-puffgres-core = { workspace = true }
+puffgres-core = { workspace = true, features = ["native-tls"] }
 puffgres-config = { workspace = true }
 puffgres-pg = { workspace = true }
 rs-puff = { workspace = true }
