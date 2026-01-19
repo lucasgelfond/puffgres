@@ -6,159 +6,12 @@
  * TypeScript transform support.
  */
 
-import { spawn, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { spawnSync } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Template files for `puffgres init`
-const TEMPLATES = {
-  'package.json': `{
-  "name": "@myapp/puffgres-service",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "puffgres run",
-    "migrate": "puffgres migrate",
-    "status": "puffgres status",
-    "backfill": "puffgres backfill",
-    "test-transform-runner": "puffgres-test-transform"
-  },
-  "dependencies": {
-    "dotenv": "^16.0.0",
-    "puffgres": "^0.1.0"
-  }
-}
-`,
-  'puffgres.toml': `# Puffgres configuration
-# CDC pipeline mirroring Postgres to turbopuffer
-
-[postgres]
-connection_string = "\${DATABASE_URL}"
-
-[turbopuffer]
-api_key = "\${TURBOPUFFER_API_KEY}"
-`,
-  '.env.example': `# Copy this to .env and fill in your values
-DATABASE_URL=postgres://user:password@localhost:5432/mydb
-TURBOPUFFER_API_KEY=your-turbopuffer-api-key
-`,
-  '.gitignore': `.env
-node_modules/
-`,
-  'migrations/0001_example.toml': `# Example migration - rename or replace with your actual migration
-version = 1
-mapping_name = "users"
-namespace = "users"
-columns = ["id", "name", "email", "bio"]
-
-[source]
-schema = "public"
-table = "users"
-
-[id]
-column = "id"
-type = "uuid"
-
-# Optional: Filter which rows to sync
-# [membership]
-# mode = "dsl"
-# predicate = "status = 'active'"
-
-# Optional: Custom transform
-# [transform]
-# path = "./transforms/users.ts"
-`,
-  'transforms/example.ts': `/**
- * Example transform.
- *
- * Rename this file and update migrations/0001_example.toml to use it.
- * You can import any npm packages here - just add them to package.json.
- */
-import type { RowEvent, Action, TransformContext } from 'puffgres';
-
-export default async function transform(
-  event: RowEvent,
-  id: string,
-  ctx: TransformContext
-): Promise<Action> {
-  if (event.op === 'delete') {
-    return { type: 'delete', id };
-  }
-
-  const row = event.new!;
-
-  return {
-    type: 'upsert',
-    id,
-    doc: {
-      name: row.name,
-      email: row.email,
-      bio: row.bio,
-    },
-  };
-}
-`,
-  'railway.json': `{
-  "build": {
-    "builder": "DOCKERFILE"
-  },
-  "deploy": {
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
-  }
-}
-`,
-  'Dockerfile': `# Dockerfile for puffgres
-# Downloads pre-built binary from GitHub releases
-
-FROM node:22-slim
-
-# Install curl for downloading binary
-RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
-
-# Set puffgres version (update this or pass as build arg)
-ARG PUFFGRES_VERSION=latest
-
-# Detect architecture and download appropriate binary
-RUN ARCH=$(uname -m) && \\
-    if [ "$ARCH" = "x86_64" ]; then \\
-        RUST_TARGET="x86_64-unknown-linux-gnu"; \\
-    elif [ "$ARCH" = "aarch64" ]; then \\
-        RUST_TARGET="aarch64-unknown-linux-gnu"; \\
-    else \\
-        echo "Unsupported architecture: $ARCH" && exit 1; \\
-    fi && \\
-    if [ "$PUFFGRES_VERSION" = "latest" ]; then \\
-        DOWNLOAD_URL="https://github.com/lucasgelfond/puffgres/releases/latest/download/puffgres-\${RUST_TARGET}.tar.gz"; \\
-    else \\
-        DOWNLOAD_URL="https://github.com/lucasgelfond/puffgres/releases/download/v\${PUFFGRES_VERSION}/puffgres-\${RUST_TARGET}.tar.gz"; \\
-    fi && \\
-    echo "Downloading puffgres from: $DOWNLOAD_URL" && \\
-    curl -fsSL "$DOWNLOAD_URL" | tar xz -C /usr/local/bin && \\
-    chmod +x /usr/local/bin/puffgres && \\
-    puffgres --version
-
-# Enable corepack for pnpm
-RUN corepack enable
-
-WORKDIR /app
-
-# Copy package files first for better caching
-COPY package.json pnpm-lock.yaml* ./
-
-# Install dependencies
-RUN pnpm install --frozen-lockfile || pnpm install
-
-# Copy the rest of the application
-COPY . .
-
-# Default command
-CMD ["pnpm", "run", "start"]
-`,
-};
 
 // Find the Rust CLI binary
 function findRustBinary(): string | null {
@@ -180,52 +33,6 @@ function findRustBinary(): string | null {
   }
 
   return null;
-}
-
-// Initialize a new puffgres project
-function initProject(targetDir: string): void {
-  const absPath = resolve(targetDir);
-
-  console.log(`Initializing puffgres project in ${absPath}`);
-  console.log('');
-
-  // Create directories
-  const dirs = ['migrations', 'transforms'];
-  for (const dir of dirs) {
-    const fullPath = join(absPath, dir);
-    if (!existsSync(fullPath)) {
-      mkdirSync(fullPath, { recursive: true });
-      console.log(`  Created ${dir}/`);
-    }
-  }
-
-  // Write template files
-  for (const [filename, content] of Object.entries(TEMPLATES)) {
-    const fullPath = join(absPath, filename);
-    const dir = dirname(fullPath);
-
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-
-    if (existsSync(fullPath)) {
-      console.log(`  Skipped ${filename} (already exists)`);
-    } else {
-      writeFileSync(fullPath, content);
-      console.log(`  Created ${filename}`);
-    }
-  }
-
-  console.log('');
-  console.log('Project initialized successfully!');
-  console.log('');
-  console.log('Next steps:');
-  console.log(`  1. cd ${targetDir}`);
-  console.log('  2. Copy .env.example to .env and fill in your values');
-  console.log('  3. Edit migrations/0001_example.toml for your schema');
-  console.log('  4. pnpm install');
-  console.log('  5. pnpm puffgres migrate');
-  console.log('  6. pnpm puffgres run');
 }
 
 // Run a command using the Rust CLI
@@ -314,10 +121,6 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'init':
-      const targetDir = args[1] || '.';
-      initProject(targetDir);
-      break;
-
     case 'run':
     case 'migrate':
     case 'backfill':
