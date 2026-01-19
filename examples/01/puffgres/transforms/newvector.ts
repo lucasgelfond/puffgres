@@ -1,3 +1,5 @@
+examples/01/puffgres/transforms/user_vector.ts
+@@ -1,78 +0,0 @@
 import type { RowEvent, Action, TransformContext, DocumentId } from 'puffgres';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
 

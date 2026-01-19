@@ -23,9 +23,10 @@ pub async fn cmd_setup(config: ProjectConfig) -> Result<()> {
 
     println!("{}", "Database tables created successfully!".green());
     println!("\nNext steps:");
-    println!("  1. Run: puffgres migrate");
-    println!("  2. Run: puffgres backfill <mapping_name>");
-    println!("  3. Run: puffgres run\n");
+    println!("  1. Run: puffgres new <table_name>");
+    println!("  2. Run: puffgres migrate");
+    println!("  3. Run: puffgres backfill <mapping_name>");
+    println!("  4. Run: puffgres run\n");
 
     Ok(())
 }

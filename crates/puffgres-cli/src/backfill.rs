@@ -10,13 +10,47 @@ use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
 use puffgres_core::{
-    extract_id, BatchConfig, Batcher, DocumentId, IdentityTransformer, Mapping, Transformer, Value,
-    WriteRequest,
+    extract_id, Action, BatchConfig, Batcher, DocumentId, IdentityTransformer, JsTransformer,
+    Mapping, TransformType, Transformer, Value, WriteRequest,
 };
 use puffgres_pg::{BackfillConfig, BackfillScanner, PostgresStateStore};
 
 use crate::config::ProjectConfig;
 use crate::env::{get_max_retries, get_transform_batch_size, get_upload_batch_size};
+
+/// Wrapper for different transformer types.
+enum MappingTransformer {
+    Identity(IdentityTransformer),
+    Js(JsTransformer),
+}
+
+impl MappingTransformer {
+    fn transform(
+        &self,
+        event: &puffgres_core::RowEvent,
+        id: DocumentId,
+    ) -> puffgres_core::Result<Action> {
+        match self {
+            MappingTransformer::Identity(t) => t.transform(event, id),
+            MappingTransformer::Js(t) => t.transform(event, id),
+        }
+    }
+}
+
+/// Create the appropriate transformer for a mapping.
+fn create_transformer(mapping: &Mapping) -> MappingTransformer {
+    match &mapping.transform {
+        Some(config) if config.transform_type == TransformType::Js => {
+            if let Some(path) = &config.path {
+                MappingTransformer::Js(JsTransformer::new(path))
+            } else {
+                // No path specified, use identity
+                MappingTransformer::Identity(IdentityTransformer::new(mapping.columns.clone()))
+            }
+        }
+        _ => MappingTransformer::Identity(IdentityTransformer::new(mapping.columns.clone())),
+    }
+}
 
 /// Run the backfill for a specific mapping.
 pub async fn run_backfill(
@@ -57,12 +91,13 @@ pub async fn run_backfill(
     };
 
     // Configure backfill scanner
+    // When a transform is configured, fetch all columns so the transform has access to everything
     let backfill_config = BackfillConfig {
         connection_string: config.postgres_connection_string()?,
         schema: mapping.source.schema.clone(),
         table: mapping.source.table.clone(),
         id_column: mapping.id.column.clone(),
-        columns: mapping.columns.clone(),
+        columns: get_backfill_columns(mapping),
         batch_size,
     };
 
@@ -85,8 +120,8 @@ pub async fn run_backfill(
     // Initialize turbopuffer client
     let tp_client = rs_puff::Client::new(config.turbopuffer_api_key()?);
 
-    // Create transformer
-    let transformer = IdentityTransformer::new(mapping.columns.clone());
+    // Create transformer - uses JS transform if configured, otherwise identity
+    let transformer = create_transformer(mapping);
 
     // Create batcher with transform batch size from environment
     let batch_config = BatchConfig::with_max_rows(transform_batch_size);
@@ -300,5 +335,110 @@ fn convert_value_to_json(value: &Value) -> serde_json::Value {
                 .map(|(k, v)| (k.clone(), convert_value_to_json(v)))
                 .collect(),
         ),
+    }
+}
+
+/// Check if a mapping has a custom JS transform configured.
+/// When true, we should fetch all columns from Postgres so the transform has access to everything.
+pub fn has_custom_transform(mapping: &Mapping) -> bool {
+    mapping
+        .transform
+        .as_ref()
+        .map(|t| t.transform_type == TransformType::Js && t.path.is_some())
+        .unwrap_or(false)
+}
+
+/// Get the columns to fetch from Postgres for a mapping.
+/// Returns empty vec (meaning all columns) when a custom transform is configured.
+pub fn get_backfill_columns(mapping: &Mapping) -> Vec<String> {
+    if has_custom_transform(mapping) {
+        vec![] // Empty = fetch all columns
+    } else {
+        mapping.columns.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use puffgres_core::{IdType, TransformConfig};
+
+    fn make_mapping_without_transform() -> Mapping {
+        Mapping::builder("test")
+            .namespace("test")
+            .source("public", "users")
+            .id("id", IdType::Uint)
+            .columns(vec!["id".into(), "name".into(), "email".into()])
+            .build()
+            .unwrap()
+    }
+
+    fn make_mapping_with_transform() -> Mapping {
+        Mapping::builder("test")
+            .namespace("test")
+            .source("public", "users")
+            .id("id", IdType::Uint)
+            .columns(vec!["id".into(), "name".into(), "email".into()])
+            .transform(TransformConfig {
+                transform_type: TransformType::Js,
+                path: Some("./transforms/test.ts".into()),
+                entry: None,
+            })
+            .build()
+            .unwrap()
+    }
+
+    fn make_mapping_with_transform_no_path() -> Mapping {
+        Mapping::builder("test")
+            .namespace("test")
+            .source("public", "users")
+            .id("id", IdType::Uint)
+            .columns(vec!["id".into(), "name".into(), "email".into()])
+            .transform(TransformConfig {
+                transform_type: TransformType::Js,
+                path: None,
+                entry: None,
+            })
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_has_custom_transform_false_when_no_transform() {
+        let mapping = make_mapping_without_transform();
+        assert!(!has_custom_transform(&mapping));
+    }
+
+    #[test]
+    fn test_has_custom_transform_true_when_js_transform_with_path() {
+        let mapping = make_mapping_with_transform();
+        assert!(has_custom_transform(&mapping));
+    }
+
+    #[test]
+    fn test_has_custom_transform_false_when_js_transform_without_path() {
+        let mapping = make_mapping_with_transform_no_path();
+        assert!(!has_custom_transform(&mapping));
+    }
+
+    #[test]
+    fn test_get_backfill_columns_returns_columns_without_transform() {
+        let mapping = make_mapping_without_transform();
+        let columns = get_backfill_columns(&mapping);
+        assert_eq!(columns, vec!["id", "name", "email"]);
+    }
+
+    #[test]
+    fn test_get_backfill_columns_returns_empty_with_transform() {
+        let mapping = make_mapping_with_transform();
+        let columns = get_backfill_columns(&mapping);
+        assert!(columns.is_empty(), "Should return empty vec to fetch all columns when transform is configured");
+    }
+
+    #[test]
+    fn test_get_backfill_columns_returns_columns_without_path() {
+        let mapping = make_mapping_with_transform_no_path();
+        let columns = get_backfill_columns(&mapping);
+        assert_eq!(columns, vec!["id", "name", "email"], "Should use columns when transform has no path");
     }
 }

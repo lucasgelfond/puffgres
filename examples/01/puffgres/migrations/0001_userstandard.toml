@@ -1,0 +1,23 @@
+# Migration for userstandard table
+version = 1
+mapping_name = "userstandard_public"
+namespace = "test-user-standard"
+
+# Columns to sync to turbopuffer
+columns = ["id", "name", "email"]
+
+[source]
+schema = "public"
+table = "users"
+
+[id]
+column = "id"
+type = "uint"
+
+# Optional: filter which rows to sync
+# [membership]
+# mode = "dsl"
+# predicate = "status = 'active'"
+
+[versioning]
+mode = "source_lsn"

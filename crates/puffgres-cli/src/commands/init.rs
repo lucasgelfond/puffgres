@@ -4,27 +4,12 @@ use std::path::Path;
 
 use anyhow::Result;
 use colored::Colorize;
-use dialoguer::Input;
 use tracing::info;
 
 use crate::env::has_all_env_vars;
 
 pub async fn cmd_init() -> Result<()> {
     println!("Initializing puffgres in current directory...\n");
-
-    // Ask for the first migration name
-    let migration_name: String = Input::new()
-        .with_prompt("What would you like to name your first migration?")
-        .with_initial_text("users")
-        .interact_text()?;
-
-    // Sanitize the migration name for filename
-    let safe_name = migration_name
-        .to_lowercase()
-        .replace(char::is_whitespace, "_")
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_')
-        .collect::<String>();
 
     // Create directories
     fs::create_dir_all("puffgres/migrations")?;
@@ -102,80 +87,6 @@ api_key = "${TURBOPUFFER_API_KEY}"
         println!("puffgres.toml already exists, skipping");
     }
 
-    // Create example migration with the user's chosen name
-    let migration = format!(
-        r#"# Migration for {name} table
-version = 1
-mapping_name = "{name}_public"
-namespace = "{name}"
-columns = ["id", "name", "created_at"]
-
-[source]
-schema = "public"
-table = "{name}"
-
-[id]
-column = "id"
-type = "uint"
-
-# Optional: filter which rows to sync
-# [membership]
-# mode = "dsl"
-# predicate = "status = 'active'"
-
-[versioning]
-mode = "source_lsn"
-
-# Optional: custom transform
-# [transform]
-# path = "./transforms/{name}.ts"
-"#,
-        name = safe_name
-    );
-
-    let migration_path = format!("puffgres/migrations/0001_{}.toml", safe_name);
-    if !Path::new(&migration_path).exists() {
-        fs::write(&migration_path, migration)?;
-        println!("Created {}", migration_path);
-    }
-
-    // Create example transform
-    let transform = format!(
-        r#"// Transform for {name} table
-// Uncomment [transform] section in migration to use this
-
-import type {{ RowEvent, Action, TransformContext }} from 'puffgres';
-
-export default async function transform(
-  event: RowEvent,
-  id: string,
-  ctx: TransformContext
-): Promise<Action> {{
-  if (event.op === 'delete') {{
-    return {{ type: 'delete', id }};
-  }}
-
-  const row = event.new!;
-
-  return {{
-    type: 'upsert',
-    id,
-    doc: {{
-      name: row.name,
-      created_at: row.created_at,
-    }},
-  }};
-}}
-"#,
-        name = safe_name
-    );
-
-    let transform_path = format!("puffgres/transforms/{}.ts", safe_name);
-    if !Path::new(&transform_path).exists() {
-        fs::write(&transform_path, transform)?;
-        println!("Created {}", transform_path);
-    }
-
     // Create .gitignore in puffgres directory
     let gitignore = "# Local transform builds\nnode_modules/\n";
     let gitignore_path = Path::new("puffgres/.gitignore");
@@ -200,13 +111,10 @@ export default async function transform(
     println!("\n{}", "Puffgres initialized!".green().bold());
     println!("\nNext steps:");
     println!("  1. Fill in your credentials in .env");
-    println!(
-        "  2. Edit puffgres/migrations/0001_{}.toml for your table",
-        safe_name
-    );
-    println!("  3. Run: puffgres setup");
+    println!("  2. Run: puffgres setup");
+    println!("  3. Run: puffgres new <table_name>");
     println!("  4. Run: puffgres migrate");
-    println!("  5. Run: puffgres backfill {}_public", safe_name);
+    println!("  5. Run: puffgres backfill <mapping_name>");
     println!("  6. Run: puffgres run\n");
 
     Ok(())

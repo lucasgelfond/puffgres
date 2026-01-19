@@ -1,8 +1,7 @@
-# Migration for users table
-version = 1
-mapping_name = "users_public"
-namespace = "users-demo-namespace"
-columns = ["id", "name", "email"]
+# Migration for uservectortransform table
+version = 2
+mapping_name = "uservectortransform_public"
+namespace = "uservectortransform"
 
 [source]
 schema = "public"
@@ -20,6 +19,5 @@ type = "uint"
 [versioning]
 mode = "source_lsn"
 
-# Optional: custom transform
-# [transform]
-# path = "./transforms/users.ts"
+[transform]
+path = "./transforms/uservectortransform.ts"

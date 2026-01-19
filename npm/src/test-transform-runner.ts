@@ -51,7 +51,7 @@ interface MigrationConfig {
   version: number;
   mapping_name: string;
   namespace: string;
-  columns: string[];
+  columns?: string[]; // Optional when using a custom transform
   source: {
     schema: string;
     table: string;
@@ -115,6 +115,7 @@ function findMigrationsDir(): string | null {
 
 /**
  * Load a migration by name or get the first one.
+ * Searches by filename first, then by mapping_name inside the TOML.
  */
 function loadMigration(migrationsDir: string, name?: string): { path: string; config: MigrationConfig } | null {
   const files = readdirSync(migrationsDir).filter((f) => f.endsWith('.toml'));
@@ -126,7 +127,21 @@ function loadMigration(migrationsDir: string, name?: string): { path: string; co
   let targetFile: string | undefined;
 
   if (name) {
+    // First try matching by filename
     targetFile = files.find((f) => f.includes(name) || f === name || f === `${name}.toml`);
+
+    // If not found, try matching by mapping_name inside the TOML
+    if (!targetFile) {
+      for (const file of files) {
+        const fullPath = join(migrationsDir, file);
+        const content = readFileSync(fullPath, 'utf-8');
+        const config = parseToml(content) as MigrationConfig;
+        if (config.mapping_name && (config.mapping_name === name || config.mapping_name.includes(name))) {
+          targetFile = file;
+          break;
+        }
+      }
+    }
   }
 
   if (!targetFile) {
@@ -445,8 +460,11 @@ async function main(): Promise<void> {
     // Get column schemas from Postgres
     const columnSchemas = await getColumnSchemas(connectionString, config.source.schema, config.source.table);
 
-    // Filter to only columns in migration config
-    const relevantColumns = columnSchemas.filter((col) => config.columns.includes(col.name));
+    // Filter to only columns in migration config (if columns specified), otherwise use all
+    const configColumns = config.columns;
+    const relevantColumns = configColumns
+      ? columnSchemas.filter((col) => configColumns.includes(col.name))
+      : columnSchemas;
 
     // Generate fake row
     const fakeRow: Record<string, unknown> = {};
