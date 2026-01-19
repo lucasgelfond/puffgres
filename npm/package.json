@@ -1,6 +1,6 @@
 {
   "name": "puffgres",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "CDC pipeline mirroring Postgres to turbopuffer",
   "type": "module",
   "main": "dist/index.js",
