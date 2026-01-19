@@ -1,15 +1,17 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tracing::{debug, error, info, warn};
 
 use puffgres_core::{
-    extract_id, Action, Batcher, DocumentId, IdentityTransformer, JsTransformer, Mapping, Router,
-    TransformType, Transformer, Value, WriteRequest,
+    extract_id, Action, BatchConfig, Batcher, DocumentId, IdentityTransformer, JsTransformer,
+    Mapping, Router, TransformType, Transformer, Value, WriteRequest,
 };
 use puffgres_pg::{format_lsn, PostgresStateStore, ReplicationStream, ReplicationStreamConfig};
 
 use crate::config::ProjectConfig;
+use crate::env::{get_max_retries, get_transform_batch_size, get_upload_batch_size};
 
 /// Wrapper for different transformer types.
 enum MappingTransformer {
@@ -102,15 +104,24 @@ pub async fn run_cdc_loop(
         .map(|m| (m.name.clone(), create_transformer(m)))
         .collect();
 
+    // Load batch configuration from environment
+    let transform_batch_size = get_transform_batch_size();
+    let upload_batch_size = get_upload_batch_size();
+    let max_retries = get_max_retries();
+
     info!(
         slot = slot,
         publication = publication,
         mappings = mappings.len(),
+        transform_batch_size,
+        upload_batch_size,
+        max_retries,
         "Starting push-based streaming CDC"
     );
 
     let mut total_events: u64 = 0;
     let mut batchers: HashMap<String, Batcher> = HashMap::new();
+    let batch_config = BatchConfig::with_max_rows(transform_batch_size);
 
     // Main streaming loop - events arrive as they happen (no polling)
     while let Some(batch) = stream.recv_batch().await? {
@@ -129,7 +140,7 @@ pub async fn run_cdc_loop(
             for mapping in matched {
                 let batcher = batchers
                     .entry(mapping.namespace.clone())
-                    .or_insert_with(|| Batcher::new(mapping.batching.clone()));
+                    .or_insert_with(|| Batcher::new(batch_config.clone()));
 
                 let transformer = transformers
                     .iter()
@@ -159,8 +170,15 @@ pub async fn run_cdc_loop(
 
                 if let Some(full_batch) = batcher.add(&mapping.namespace, action, event.lsn) {
                     let request = WriteRequest::from_batch(full_batch);
-                    if let Err(e) =
-                        flush_batch(&tp_client, &state_store, &mapping.name, request).await
+                    if let Err(e) = flush_batch(
+                        &tp_client,
+                        &state_store,
+                        &mapping.name,
+                        request,
+                        upload_batch_size,
+                        max_retries,
+                    )
+                    .await
                     {
                         error!(mapping = %mapping.name, error = %e, "Failed to flush batch");
                     }
@@ -180,7 +198,16 @@ pub async fn run_cdc_loop(
                     .map(|m| m.name.as_str())
                     .unwrap_or(namespace);
 
-                if let Err(e) = flush_batch(&tp_client, &state_store, mapping_name, request).await {
+                if let Err(e) = flush_batch(
+                    &tp_client,
+                    &state_store,
+                    mapping_name,
+                    request,
+                    upload_batch_size,
+                    max_retries,
+                )
+                .await
+                {
                     error!(namespace = %namespace, error = %e, "Failed to flush batch");
                 }
             }
@@ -207,6 +234,8 @@ async fn flush_batch(
     state_store: &PostgresStateStore,
     mapping_name: &str,
     request: WriteRequest,
+    upload_batch_size: usize,
+    max_retries: u32,
 ) -> Result<()> {
     let lsn = request.lsn;
     let count = request.upserts.len() + request.deletes.len();
@@ -224,51 +253,50 @@ async fn flush_batch(
         "Flushing batch"
     );
 
-    // Build upsert rows
-    let upsert_rows: Option<Vec<HashMap<String, serde_json::Value>>> = if request.upserts.is_empty()
-    {
-        None
-    } else {
-        Some(
-            request
-                .upserts
+    // Build all upsert rows
+    let all_upsert_rows: Vec<HashMap<String, serde_json::Value>> = request
+        .upserts
+        .iter()
+        .map(|doc| {
+            let mut row: HashMap<String, serde_json::Value> = doc
+                .attributes
                 .iter()
-                .map(|doc| {
-                    let mut row: HashMap<String, serde_json::Value> = doc
-                        .attributes
-                        .iter()
-                        .map(|(k, v)| (k.clone(), convert_value_to_json(v)))
-                        .collect();
-                    row.insert("id".to_string(), convert_doc_id_to_json(&doc.id));
-                    row.insert(
-                        "__source_lsn".to_string(),
-                        serde_json::Value::Number(request.lsn.into()),
-                    );
-                    row
-                })
-                .collect(),
-        )
-    };
+                .map(|(k, v)| (k.clone(), convert_value_to_json(v)))
+                .collect();
+            row.insert("id".to_string(), convert_doc_id_to_json(&doc.id));
+            row.insert(
+                "__source_lsn".to_string(),
+                serde_json::Value::Number(request.lsn.into()),
+            );
+            row
+        })
+        .collect();
 
-    // Build delete IDs
-    let deletes: Option<Vec<serde_json::Value>> = if request.deletes.is_empty() {
-        None
-    } else {
-        Some(request.deletes.iter().map(convert_doc_id_to_json).collect())
-    };
+    // Build all delete IDs
+    let all_deletes: Vec<serde_json::Value> =
+        request.deletes.iter().map(convert_doc_id_to_json).collect();
 
-    let params = rs_puff::WriteParams {
-        upsert_rows,
-        deletes,
-        ..Default::default()
-    };
+    // Upload upserts in batches
+    for chunk in all_upsert_rows.chunks(upload_batch_size) {
+        let params = rs_puff::WriteParams {
+            upsert_rows: Some(chunk.to_vec()),
+            deletes: None,
+            ..Default::default()
+        };
 
-    // Write to turbopuffer
-    client
-        .namespace(&request.namespace)
-        .write(params)
-        .await
-        .context("Failed to write to turbopuffer")?;
+        write_with_retry(client, &request.namespace, params, max_retries).await?;
+    }
+
+    // Upload deletes in batches
+    for chunk in all_deletes.chunks(upload_batch_size) {
+        let params = rs_puff::WriteParams {
+            upsert_rows: None,
+            deletes: Some(chunk.to_vec()),
+            ..Default::default()
+        };
+
+        write_with_retry(client, &request.namespace, params, max_retries).await?;
+    }
 
     // Update checkpoint
     let mut checkpoint = state_store
@@ -285,6 +313,41 @@ async fn flush_batch(
         .context("Failed to save checkpoint")?;
 
     Ok(())
+}
+
+/// Write to turbopuffer with exponential backoff retry.
+async fn write_with_retry(
+    client: &rs_puff::Client,
+    namespace: &str,
+    params: rs_puff::WriteParams,
+    max_retries: u32,
+) -> Result<()> {
+    let base_delay_ms = 100u64;
+
+    for attempt in 0..=max_retries {
+        match client.namespace(namespace).write(params.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                if attempt == max_retries {
+                    return Err(e).context("Failed to write to turbopuffer after all retries");
+                }
+
+                let delay_ms = base_delay_ms * (1 << attempt);
+                warn!(
+                    namespace = namespace,
+                    attempt = attempt + 1,
+                    max_retries,
+                    delay_ms,
+                    error = %e,
+                    "Turbopuffer write failed, retrying"
+                );
+
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+
+    unreachable!()
 }
 
 fn convert_doc_id_to_json(id: &DocumentId) -> serde_json::Value {

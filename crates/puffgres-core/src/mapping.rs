@@ -115,6 +115,16 @@ impl Default for BatchConfig {
     }
 }
 
+impl BatchConfig {
+    /// Create a BatchConfig with a specific max_rows value.
+    pub fn with_max_rows(max_rows: usize) -> Self {
+        Self {
+            max_rows,
+            ..Default::default()
+        }
+    }
+}
+
 /// Versioning mode for anti-regression.
 #[derive(Debug, Clone, Default)]
 pub enum VersioningMode {

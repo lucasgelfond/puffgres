@@ -1,12 +1,45 @@
 use anyhow::{Context, Result};
 use tracing::info;
 
+/// Default batch size for processing transforms (rows per batch).
+pub const DEFAULT_TRANSFORM_BATCH_SIZE: usize = 100;
+
+/// Default batch size for uploading to turbopuffer (documents per API call).
+pub const DEFAULT_UPLOAD_BATCH_SIZE: usize = 500;
+
+/// Default maximum retries for failed turbopuffer uploads.
+pub const DEFAULT_MAX_RETRIES: u32 = 5;
+
 /// Check if all required puffgres environment variables are set.
 /// Returns true if DATABASE_URL, TURBOPUFFER_API_KEY, and PUFFGRES_BASE_NAMESPACE are all present.
 pub fn has_all_env_vars() -> bool {
     std::env::var("DATABASE_URL").is_ok()
         && std::env::var("TURBOPUFFER_API_KEY").is_ok()
         && std::env::var("PUFFGRES_BASE_NAMESPACE").is_ok()
+}
+
+/// Get the transform batch size from environment or use default.
+pub fn get_transform_batch_size() -> usize {
+    std::env::var("PUFFGRES_TRANSFORM_BATCH_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_TRANSFORM_BATCH_SIZE)
+}
+
+/// Get the upload batch size from environment or use default.
+pub fn get_upload_batch_size() -> usize {
+    std::env::var("PUFFGRES_UPLOAD_BATCH_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_UPLOAD_BATCH_SIZE)
+}
+
+/// Get the max retries from environment or use default.
+pub fn get_max_retries() -> u32 {
+    std::env::var("PUFFGRES_MAX_RETRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MAX_RETRIES)
 }
 
 /// Load .env file from current directory or any parent directory

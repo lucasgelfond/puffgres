@@ -10,11 +10,13 @@ use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
 use puffgres_core::{
-    extract_id, Batcher, DocumentId, IdentityTransformer, Mapping, Transformer, Value, WriteRequest,
+    extract_id, BatchConfig, Batcher, DocumentId, IdentityTransformer, Mapping, Transformer, Value,
+    WriteRequest,
 };
 use puffgres_pg::{BackfillConfig, BackfillScanner, PostgresStateStore};
 
 use crate::config::ProjectConfig;
+use crate::env::{get_max_retries, get_transform_batch_size, get_upload_batch_size};
 
 /// Run the backfill for a specific mapping.
 pub async fn run_backfill(
@@ -23,11 +25,19 @@ pub async fn run_backfill(
     batch_size: u32,
     resume: bool,
 ) -> Result<()> {
+    // Load batch and retry configuration from environment
+    let transform_batch_size = get_transform_batch_size();
+    let upload_batch_size = get_upload_batch_size();
+    let max_retries = get_max_retries();
+
     info!(
         mapping = %mapping.name,
         namespace = %mapping.namespace,
         table = format!("{}.{}", mapping.source.schema, mapping.source.table),
         batch_size,
+        transform_batch_size,
+        upload_batch_size,
+        max_retries,
         resume,
         "Starting backfill"
     );
@@ -78,8 +88,9 @@ pub async fn run_backfill(
     // Create transformer
     let transformer = IdentityTransformer::new(mapping.columns.clone());
 
-    // Create batcher
-    let mut batcher = Batcher::new(mapping.batching.clone());
+    // Create batcher with transform batch size from environment
+    let batch_config = BatchConfig::with_max_rows(transform_batch_size);
+    let mut batcher = Batcher::new(batch_config);
 
     // Progress tracking
     let mut last_progress_update = Instant::now();
@@ -127,14 +138,14 @@ pub async fn run_backfill(
             // Add to batcher
             if let Some(batch) = batcher.add(&mapping.namespace, action, 0) {
                 let request = WriteRequest::from_batch(batch);
-                flush_batch(&tp_client, &request).await?;
+                flush_batch(&tp_client, &request, upload_batch_size, max_retries).await?;
             }
         }
 
         // Flush any remaining items in the batcher
         for batch in batcher.flush_all() {
             let request = WriteRequest::from_batch(batch);
-            flush_batch(&tp_client, &request).await?;
+            flush_batch(&tp_client, &request, upload_batch_size, max_retries).await?;
         }
 
         // Update progress in database
@@ -160,7 +171,7 @@ pub async fn run_backfill(
     // Final flush
     for batch in batcher.flush_all() {
         let request = WriteRequest::from_batch(batch);
-        flush_batch(&tp_client, &request).await?;
+        flush_batch(&tp_client, &request, upload_batch_size, max_retries).await?;
     }
 
     // Mark as complete
@@ -182,8 +193,13 @@ pub async fn run_backfill(
     Ok(())
 }
 
-/// Flush a batch to turbopuffer.
-async fn flush_batch(client: &rs_puff::Client, request: &WriteRequest) -> Result<()> {
+/// Flush a batch to turbopuffer with upload batching and retry logic.
+async fn flush_batch(
+    client: &rs_puff::Client,
+    request: &WriteRequest,
+    upload_batch_size: usize,
+    max_retries: u32,
+) -> Result<()> {
     if request.is_empty() {
         return Ok(());
     }
@@ -194,42 +210,69 @@ async fn flush_batch(client: &rs_puff::Client, request: &WriteRequest) -> Result
         "Flushing backfill batch"
     );
 
-    // Build upsert rows
-    let upsert_rows: Option<Vec<HashMap<String, serde_json::Value>>> = if request.upserts.is_empty()
-    {
-        None
-    } else {
-        Some(
-            request
-                .upserts
+    // Build all upsert rows
+    let all_upsert_rows: Vec<HashMap<String, serde_json::Value>> = request
+        .upserts
+        .iter()
+        .map(|doc| {
+            let mut row: HashMap<String, serde_json::Value> = doc
+                .attributes
                 .iter()
-                .map(|doc| {
-                    let mut row: HashMap<String, serde_json::Value> = doc
-                        .attributes
-                        .iter()
-                        .map(|(k, v)| (k.clone(), convert_value_to_json(v)))
-                        .collect();
-                    row.insert("id".to_string(), convert_doc_id_to_json(&doc.id));
-                    row.insert("__backfill".to_string(), serde_json::Value::Bool(true));
-                    row
-                })
-                .collect(),
-        )
-    };
+                .map(|(k, v)| (k.clone(), convert_value_to_json(v)))
+                .collect();
+            row.insert("id".to_string(), convert_doc_id_to_json(&doc.id));
+            row.insert("__backfill".to_string(), serde_json::Value::Bool(true));
+            row
+        })
+        .collect();
 
-    let params = rs_puff::WriteParams {
-        upsert_rows,
-        deletes: None,
-        ..Default::default()
-    };
+    // Upload in batches with retry logic
+    for chunk in all_upsert_rows.chunks(upload_batch_size) {
+        let params = rs_puff::WriteParams {
+            upsert_rows: Some(chunk.to_vec()),
+            deletes: None,
+            ..Default::default()
+        };
 
-    client
-        .namespace(&request.namespace)
-        .write(params)
-        .await
-        .context("Failed to write to turbopuffer")?;
+        write_with_retry(client, &request.namespace, params, max_retries).await?;
+    }
 
     Ok(())
+}
+
+/// Write to turbopuffer with exponential backoff retry.
+async fn write_with_retry(
+    client: &rs_puff::Client,
+    namespace: &str,
+    params: rs_puff::WriteParams,
+    max_retries: u32,
+) -> Result<()> {
+    let base_delay_ms = 100u64;
+
+    for attempt in 0..=max_retries {
+        match client.namespace(namespace).write(params.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                if attempt == max_retries {
+                    return Err(e).context("Failed to write to turbopuffer after all retries");
+                }
+
+                let delay_ms = base_delay_ms * (1 << attempt);
+                warn!(
+                    namespace = namespace,
+                    attempt = attempt + 1,
+                    max_retries,
+                    delay_ms,
+                    error = %e,
+                    "Turbopuffer write failed, retrying"
+                );
+
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+        }
+    }
+
+    unreachable!()
 }
 
 fn convert_doc_id_to_json(id: &DocumentId) -> serde_json::Value {
