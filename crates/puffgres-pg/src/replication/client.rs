@@ -5,12 +5,16 @@ use std::time::Duration;
 
 use pgwire_replication::{ReplicationClient, ReplicationConfig as PgwireConfig, ReplicationEvent};
 use puffgres_core::{Operation, RowEvent, Value};
-use tokio_postgres::NoTls;
 use tracing::{debug, info, warn};
+
+use tokio_postgres::Client;
 
 use super::lsn::{format_lsn, parse_lsn};
 use super::pgoutput::{ColumnInfo, ColumnValue, PgOutputDecoder, PgOutputMessage};
+use super::publication::ensure_publication;
 use super::relation_cache::RelationCache;
+use super::slot::{ensure_slot, get_confirmed_flush_lsn};
+use super::validation::validate_all_tables_readable;
 use crate::error::{PgError, PgResult};
 
 /// Configuration for streaming replication.
@@ -90,29 +94,54 @@ impl ReplicationStream {
     /// 1. Ensure the replication slot exists (create if needed)
     /// 2. Ensure the publication exists (create if needed)
     /// 3. Start the streaming replication connection
-    pub async fn connect(config: ReplicationStreamConfig) -> PgResult<Self> {
+    ///
+    /// The `control_client` is a tokio-postgres Client used for control plane operations
+    /// (creating slots, publications, querying LSN). This should be separate from the
+    /// replication connection. pgwire-replication handles only the replication plane.
+    pub async fn connect(config: ReplicationStreamConfig, control_client: &Client) -> PgResult<Self> {
         info!(
             slot = %config.slot_name,
             publication = %config.publication_name,
             "Connecting for streaming replication"
         );
 
-        // First ensure prerequisites using regular postgres connection
-        Self::ensure_prerequisites(&config).await?;
+        // First ensure prerequisites using the control plane connection
+        Self::ensure_prerequisites(&config, control_client).await?;
 
         // Parse connection string to extract host, port, user, password, database
         let conn_params = Self::parse_connection_string(&config.connection_string)?;
+
+        debug!(
+            host = %conn_params.host,
+            port = conn_params.port,
+            user = %conn_params.user,
+            database = %conn_params.database,
+            sslmode = ?conn_params.sslmode,
+            password_len = conn_params.password.len(),
+            "Parsed connection parameters for pgwire-replication"
+        );
 
         // Get start LSN
         let start_lsn = if let Some(lsn) = config.start_lsn {
             pgwire_replication::Lsn::from(lsn)
         } else {
             // Get current confirmed_flush_lsn from slot
-            let lsn = Self::get_confirmed_lsn(&config).await?;
+            let lsn = Self::get_confirmed_lsn(&config, control_client).await?;
             pgwire_replication::Lsn::from(lsn.unwrap_or(0))
         };
 
         info!(start_lsn = %format_lsn(start_lsn.into()), "Starting replication stream");
+
+        // Build TLS config from sslmode
+        let tls_mode_str = conn_params.sslmode.as_deref().unwrap_or("disabled");
+        debug!(sslmode = %tls_mode_str, "Configuring TLS for pgwire-replication");
+
+        let tls = match conn_params.sslmode.as_deref() {
+            Some("require") => pgwire_replication::TlsConfig::require(),
+            Some("verify-ca") => pgwire_replication::TlsConfig::verify_ca(None),
+            Some("verify-full") => pgwire_replication::TlsConfig::verify_full(None),
+            _ => pgwire_replication::TlsConfig::disabled(),
+        };
 
         // Build pgwire-replication config
         let pgwire_config = PgwireConfig {
@@ -128,12 +157,28 @@ impl ReplicationStream {
             status_interval: config.status_interval,
             idle_wakeup_interval: Duration::from_secs(10),
             buffer_events: 8192,
-            tls: pgwire_replication::TlsConfig::disabled(),
+            tls,
         };
 
-        let client = ReplicationClient::connect(pgwire_config)
-            .await
-            .map_err(|e| PgError::Replication(e.to_string()))?;
+        debug!(
+            host = %pgwire_config.host,
+            port = pgwire_config.port,
+            user = %pgwire_config.user,
+            database = %pgwire_config.database,
+            slot = %pgwire_config.slot,
+            publication = %pgwire_config.publication,
+            "Attempting pgwire-replication connection"
+        );
+
+        let client = ReplicationClient::connect(pgwire_config).await.map_err(|e| {
+            warn!(
+                error = %e,
+                "pgwire-replication connection failed"
+            );
+            PgError::Replication(e.to_string())
+        })?;
+
+        info!("pgwire-replication connection established successfully");
 
         Ok(Self {
             client,
@@ -149,6 +194,8 @@ impl ReplicationStream {
     /// This blocks until a complete transaction is received or the stream ends.
     /// Returns None if the stream has ended.
     pub async fn recv_batch(&mut self) -> PgResult<Option<StreamingBatch>> {
+        info!("Waiting for replication events...");
+
         loop {
             let event = self
                 .client
@@ -156,146 +203,105 @@ impl ReplicationStream {
                 .await
                 .map_err(|e| PgError::Replication(e.to_string()))?;
 
+            debug!("Received event: {:?}", event);
+
+            let Some(event) = event else {
+                info!("Replication stream ended (recv returned None)");
+                return Ok(None);
+            };
+
             match event {
-                Some(ReplicationEvent::XLogData { wal_end, data, .. }) => {
+                ReplicationEvent::XLogData { wal_end, data, .. } => {
                     let wal_end_u64: u64 = wal_end.into();
 
-                    // Decode the pgoutput message
+                    // Decode pgoutput message
                     let msg = match self.decoder.decode(&data) {
                         Ok(m) => m,
                         Err(e) => {
-                            warn!(error = %e, "Failed to decode pgoutput message, skipping");
+                            warn!(error = %e, "Failed to decode pgoutput message");
                             continue;
                         }
                     };
 
-                    // Process the message
-                    if let Some(batch) = self.process_message(msg, wal_end_u64)? {
-                        return Ok(Some(batch));
-                    }
-                }
-                Some(ReplicationEvent::KeepAlive {
-                    wal_end,
-                    reply_requested,
-                    ..
-                }) => {
-                    debug!(wal_end = %format_lsn(wal_end.into()), reply_requested, "Received keepalive");
-                    // Keepalives are handled automatically by pgwire-replication
-                }
-                Some(ReplicationEvent::StoppedAt { reached }) => {
-                    info!(lsn = %format_lsn(reached.into()), "Replication stream stopped");
-                    return Ok(None);
-                }
-                Some(_) => {
-                    // Handle any other event types (e.g., Begin, Commit at protocol level)
-                    // These are rare and we can safely skip them
-                    continue;
-                }
-                None => {
-                    info!("Replication stream ended");
-                    return Ok(None);
-                }
-            }
-        }
-    }
+                    debug!(wal_end = %format_lsn(wal_end_u64), msg = ?msg, "Decoded XLogData");
 
-    /// Process a decoded pgoutput message.
-    ///
-    /// Returns Some(batch) when a transaction is complete.
-    fn process_message(
-        &mut self,
-        msg: PgOutputMessage,
-        lsn: u64,
-    ) -> PgResult<Option<StreamingBatch>> {
-        match msg {
-            PgOutputMessage::Begin(begin) => {
-                debug!(xid = begin.xid, final_lsn = %format_lsn(begin.final_lsn), "Transaction begin");
-                self.current_txn = Some(TransactionState {
-                    xid: begin.xid,
-                    timestamp: begin.timestamp,
-                    events: Vec::new(),
-                });
-                Ok(None)
-            }
-            PgOutputMessage::Commit(commit) => {
-                debug!(lsn = %format_lsn(commit.end_lsn), "Transaction commit");
-                if let Some(txn) = self.current_txn.take() {
-                    if !txn.events.is_empty() {
-                        info!(
-                            xid = txn.xid,
-                            count = txn.events.len(),
-                            lsn = %format_lsn(commit.end_lsn),
-                            "Completed transaction batch"
-                        );
+                    // Handle Begin/Commit from XLogData (pgoutput encodes them here)
+                    match &msg {
+                        PgOutputMessage::Begin(begin) => {
+                            info!(xid = begin.xid, "Transaction begin");
+                            self.current_txn = Some(TransactionState {
+                                xid: begin.xid,
+                                timestamp: begin.timestamp,
+                                events: Vec::new(),
+                            });
+                        }
+                        PgOutputMessage::Commit(commit) => {
+                            info!(lsn = %format_lsn(commit.end_lsn), "Transaction commit");
+                            if let Some(txn) = self.current_txn.take() {
+                                return Ok(Some(StreamingBatch {
+                                    events: txn.events,
+                                    ack_lsn: commit.end_lsn,
+                                }));
+                            }
+                        }
+                        PgOutputMessage::Relation(rel) => {
+                            debug!(table = %rel.name, "Relation metadata");
+                            self.relation_cache.update(rel);
+                        }
+                        PgOutputMessage::Insert(insert) => {
+                            if self.current_txn.is_some() {
+                                if let Ok(event) = self.to_row_event_insert(insert, wal_end_u64) {
+                                    info!(op = "insert", table = %event.table, "Row change");
+                                    self.current_txn.as_mut().unwrap().events.push(event);
+                                }
+                            }
+                        }
+                        PgOutputMessage::Update(update) => {
+                            if self.current_txn.is_some() {
+                                if let Ok(event) = self.to_row_event_update(update, wal_end_u64) {
+                                    info!(op = "update", table = %event.table, "Row change");
+                                    self.current_txn.as_mut().unwrap().events.push(event);
+                                }
+                            }
+                        }
+                        PgOutputMessage::Delete(delete) => {
+                            if self.current_txn.is_some() {
+                                if let Ok(event) = self.to_row_event_delete(delete, wal_end_u64) {
+                                    info!(op = "delete", table = %event.table, "Row change");
+                                    self.current_txn.as_mut().unwrap().events.push(event);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
-                    Ok(Some(StreamingBatch {
-                        events: txn.events,
-                        ack_lsn: commit.end_lsn,
-                    }))
-                } else {
-                    warn!("Received commit without begin");
-                    Ok(None)
                 }
-            }
-            PgOutputMessage::Relation(rel) => {
-                debug!(
-                    relation_id = rel.relation_id,
-                    schema = %rel.namespace,
-                    table = %rel.name,
-                    "Caching relation metadata"
-                );
-                self.relation_cache.update(&rel);
-                Ok(None)
-            }
-            PgOutputMessage::Insert(insert) => {
-                let event = self.to_row_event_insert(&insert, lsn)?;
-                if let Some(ref mut txn) = self.current_txn {
-                    info!(
-                        op = "insert",
-                        schema = %event.schema,
-                        table = %event.table,
-                        lsn = %format_lsn(lsn),
-                        "Received change"
-                    );
-                    txn.events.push(event);
+                ReplicationEvent::KeepAlive { wal_end, reply_requested, .. } => {
+                    debug!(wal_end = %format_lsn(wal_end.into()), reply_requested, "Keepalive");
                 }
-                Ok(None)
-            }
-            PgOutputMessage::Update(update) => {
-                let event = self.to_row_event_update(&update, lsn)?;
-                if let Some(ref mut txn) = self.current_txn {
-                    info!(
-                        op = "update",
-                        schema = %event.schema,
-                        table = %event.table,
-                        lsn = %format_lsn(lsn),
-                        "Received change"
-                    );
-                    txn.events.push(event);
+                ReplicationEvent::StoppedAt { reached } => {
+                    info!(lsn = %format_lsn(reached.into()), "Stream stopped");
+                    return Ok(None);
                 }
-                Ok(None)
-            }
-            PgOutputMessage::Delete(delete) => {
-                let event = self.to_row_event_delete(&delete, lsn)?;
-                if let Some(ref mut txn) = self.current_txn {
-                    info!(
-                        op = "delete",
-                        schema = %event.schema,
-                        table = %event.table,
-                        lsn = %format_lsn(lsn),
-                        "Received change"
-                    );
-                    txn.events.push(event);
+                // These are alternative event types - pgwire-replication may send Begin/Commit
+                // either as separate events or encoded in XLogData depending on version
+                ReplicationEvent::Begin { xid, commit_time_micros, .. } => {
+                    info!(xid = xid, "Transaction begin (protocol event)");
+                    self.current_txn = Some(TransactionState {
+                        xid,
+                        timestamp: commit_time_micros,
+                        events: Vec::new(),
+                    });
                 }
-                Ok(None)
-            }
-            PgOutputMessage::Truncate(_) => {
-                warn!("Truncate operations are not supported, skipping");
-                Ok(None)
-            }
-            PgOutputMessage::Type(_) | PgOutputMessage::Origin(_) | PgOutputMessage::Message(_) => {
-                // These don't produce row events
-                Ok(None)
+                ReplicationEvent::Commit { end_lsn, .. } => {
+                    let end_lsn_u64: u64 = end_lsn.into();
+                    info!(lsn = %format_lsn(end_lsn_u64), "Transaction commit (protocol event)");
+                    if let Some(txn) = self.current_txn.take() {
+                        return Ok(Some(StreamingBatch {
+                            events: txn.events,
+                            ack_lsn: end_lsn_u64,
+                        }));
+                    }
+                }
             }
         }
     }
@@ -432,125 +438,33 @@ impl ReplicationStream {
     }
 
     /// Ensure replication slot and publication exist.
-    async fn ensure_prerequisites(config: &ReplicationStreamConfig) -> PgResult<()> {
-        let (client, connection) = tokio_postgres::connect(&config.connection_string, NoTls)
-            .await
-            .map_err(|e| PgError::Connection(e.to_string()))?;
-
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!("Postgres connection error: {}", e);
-            }
-        });
-
-        // Check/create replication slot with pgoutput
-        let slot_exists: bool = client
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
-                &[&config.slot_name],
-            )
-            .await?
-            .get(0);
-
-        if !slot_exists {
-            if config.create_slot {
-                info!(slot = %config.slot_name, "Creating replication slot with pgoutput");
-                client
-                    .execute(
-                        "SELECT pg_create_logical_replication_slot($1, 'pgoutput')",
-                        &[&config.slot_name],
-                    )
-                    .await
-                    .map_err(|e| PgError::SlotCreationFailed(e.to_string()))?;
-            } else {
-                return Err(PgError::SlotNotFound(config.slot_name.clone()));
-            }
-        } else {
-            info!(slot = %config.slot_name, "Using existing replication slot");
+    async fn ensure_prerequisites(config: &ReplicationStreamConfig, client: &Client) -> PgResult<()> {
+        // First, validate that we can actually read from the tables
+        // This catches issues where tables don't exist or permissions are wrong
+        if !config.publication_tables.is_empty() {
+            validate_all_tables_readable(client, &config.publication_tables).await?;
         }
 
-        // Check/create publication
-        let pub_exists: bool = client
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM pg_publication WHERE pubname = $1)",
-                &[&config.publication_name],
-            )
-            .await?
-            .get(0);
+        // Ensure slot exists with correct plugin
+        ensure_slot(client, &config.slot_name, config.create_slot).await?;
 
-        if !pub_exists {
-            if config.create_publication {
-                if config.publication_tables.is_empty() {
-                    info!(publication = %config.publication_name, "Creating publication for all tables");
-                    client
-                        .execute(
-                            &format!(
-                                "CREATE PUBLICATION {} FOR ALL TABLES",
-                                quote_ident(&config.publication_name)
-                            ),
-                            &[],
-                        )
-                        .await
-                        .map_err(|e| PgError::Replication(e.to_string()))?;
-                } else {
-                    let tables = config
-                        .publication_tables
-                        .iter()
-                        .map(|t| quote_ident(t))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    info!(publication = %config.publication_name, tables = %tables, "Creating publication");
-                    client
-                        .execute(
-                            &format!(
-                                "CREATE PUBLICATION {} FOR TABLE {}",
-                                quote_ident(&config.publication_name),
-                                tables
-                            ),
-                            &[],
-                        )
-                        .await
-                        .map_err(|e| PgError::Replication(e.to_string()))?;
-                }
-            } else {
-                return Err(PgError::PublicationNotFound(
-                    config.publication_name.clone(),
-                ));
-            }
-        } else {
-            info!(publication = %config.publication_name, "Using existing publication");
-        }
+        // Ensure publication exists with correct tables
+        ensure_publication(
+            client,
+            &config.publication_name,
+            &config.publication_tables,
+            config.create_publication,
+        )
+        .await?;
 
         Ok(())
     }
 
     /// Get confirmed_flush_lsn for the slot.
-    async fn get_confirmed_lsn(config: &ReplicationStreamConfig) -> PgResult<Option<u64>> {
-        let (client, connection) = tokio_postgres::connect(&config.connection_string, NoTls)
-            .await
-            .map_err(|e| PgError::Connection(e.to_string()))?;
-
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!("Postgres connection error: {}", e);
-            }
-        });
-
-        let row = client
-            .query_opt(
-                "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1",
-                &[&config.slot_name],
-            )
-            .await?;
-
-        match row {
-            Some(r) => {
-                let lsn: Option<String> = r.get(0);
-                match lsn {
-                    Some(l) => Ok(Some(parse_lsn(&l)?)),
-                    None => Ok(None),
-                }
-            }
+    async fn get_confirmed_lsn(config: &ReplicationStreamConfig, client: &Client) -> PgResult<Option<u64>> {
+        let lsn_str = get_confirmed_flush_lsn(client, &config.slot_name).await?;
+        match lsn_str {
+            Some(l) => Ok(Some(parse_lsn(&l)?)),
             None => Ok(None),
         }
     }
@@ -566,15 +480,28 @@ impl ReplicationStream {
     }
 
     fn parse_url_connection_string(conn_str: &str) -> PgResult<ConnectionParams> {
-        // postgres://user:password@host:port/database
+        // postgres://user:password@host:port/database?sslmode=require
         let url = url::Url::parse(conn_str)
             .map_err(|e| PgError::Connection(format!("Invalid connection URL: {}", e)))?;
 
         let host = url.host_str().unwrap_or("localhost").to_string();
         let port = url.port().unwrap_or(5432);
-        let user = url.username().to_string();
-        let password = url.password().unwrap_or("").to_string();
+        // URL-decode username and password since they may contain percent-encoded special characters
+        let user = percent_encoding::percent_decode_str(url.username())
+            .decode_utf8()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|_| url.username().to_string());
+        let password = url
+            .password()
+            .map(|p| {
+                percent_encoding::percent_decode_str(p)
+                    .decode_utf8()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| p.to_string())
+            })
+            .unwrap_or_default();
         let database = url.path().trim_start_matches('/').to_string();
+        let sslmode = url.query_pairs().find(|(k, _)| k == "sslmode").map(|(_, v)| v.to_string());
 
         Ok(ConnectionParams {
             host,
@@ -582,16 +509,18 @@ impl ReplicationStream {
             user,
             password,
             database,
+            sslmode,
         })
     }
 
     fn parse_keyvalue_connection_string(conn_str: &str) -> PgResult<ConnectionParams> {
-        // host=localhost port=5432 user=postgres password=... dbname=...
+        // host=localhost port=5432 user=postgres password=... dbname=... sslmode=require
         let mut host = "localhost".to_string();
         let mut port = 5432u16;
         let mut user = "postgres".to_string();
         let mut password = String::new();
         let mut database = "postgres".to_string();
+        let mut sslmode = None;
 
         for part in conn_str.split_whitespace() {
             if let Some((key, value)) = part.split_once('=') {
@@ -605,6 +534,7 @@ impl ReplicationStream {
                     "user" => user = value.to_string(),
                     "password" => password = value.to_string(),
                     "dbname" | "database" => database = value.to_string(),
+                    "sslmode" => sslmode = Some(value.to_string()),
                     _ => {}
                 }
             }
@@ -616,6 +546,7 @@ impl ReplicationStream {
             user,
             password,
             database,
+            sslmode,
         })
     }
 }
@@ -626,11 +557,7 @@ struct ConnectionParams {
     user: String,
     password: String,
     database: String,
-}
-
-/// Quote an identifier for use in SQL.
-fn quote_ident(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\"\""))
+    sslmode: Option<String>,
 }
 
 /// Parse a text-format value based on its PostgreSQL type OID.
@@ -681,4 +608,40 @@ fn format_pg_timestamp(micros: i64) -> String {
     chrono::DateTime::from_timestamp(unix_secs, nanos)
         .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())
         .unwrap_or_else(|| format!("{}us", micros))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_url_sslmode() {
+        let params = ReplicationStream::parse_url_connection_string(
+            "postgres://user:pass@host:5432/db?sslmode=require"
+        ).unwrap();
+        assert_eq!(params.sslmode, Some("require".to_string()));
+
+        let params = ReplicationStream::parse_url_connection_string(
+            "postgres://user:pass@host:5432/db?sslmode=verify-full"
+        ).unwrap();
+        assert_eq!(params.sslmode, Some("verify-full".to_string()));
+
+        let params = ReplicationStream::parse_url_connection_string(
+            "postgres://user:pass@host:5432/db"
+        ).unwrap();
+        assert_eq!(params.sslmode, None);
+    }
+
+    #[test]
+    fn test_parse_keyvalue_sslmode() {
+        let params = ReplicationStream::parse_keyvalue_connection_string(
+            "host=localhost port=5432 user=postgres dbname=test sslmode=require"
+        ).unwrap();
+        assert_eq!(params.sslmode, Some("require".to_string()));
+
+        let params = ReplicationStream::parse_keyvalue_connection_string(
+            "host=localhost port=5432 user=postgres dbname=test"
+        ).unwrap();
+        assert_eq!(params.sslmode, None);
+    }
 }

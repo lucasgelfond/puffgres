@@ -8,6 +8,8 @@ use puffgres_config::MigrationConfig;
 use puffgres_core::Mapping;
 use puffgres_pg::LocalMigration;
 
+use crate::env::warn_if_pooler_url;
+
 /// Project configuration from puffgres.toml
 #[derive(Debug, Deserialize)]
 pub struct ProjectConfig {
@@ -82,7 +84,9 @@ impl ProjectConfig {
     /// Get the resolved Postgres connection string.
     /// Returns an error if required environment variables are not set.
     pub fn postgres_connection_string(&self) -> Result<String> {
-        self.resolve_env_required(&self.postgres.connection_string, "DATABASE_URL")
+        let url = self.resolve_env_required(&self.postgres.connection_string, "DATABASE_URL")?;
+        warn_if_pooler_url(&url);
+        Ok(url)
     }
 
     /// Get the resolved Turbopuffer API key.

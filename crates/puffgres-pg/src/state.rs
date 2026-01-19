@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio_postgres::Client;
 use tracing::{debug, info};
 
+use crate::connect::connect_postgres;
 use crate::error::{PgError, PgResult};
 
 /// Checkpoint state for a mapping.
@@ -75,18 +76,7 @@ pub struct PostgresStateStore {
 impl PostgresStateStore {
     /// Create a new state store and connect to Postgres.
     pub async fn connect(connection_string: &str) -> PgResult<Self> {
-        let (client, connection) =
-            tokio_postgres::connect(connection_string, tokio_postgres::NoTls)
-                .await
-                .map_err(|e| PgError::Connection(e.to_string()))?;
-
-        // Spawn connection handler
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!(error = %e, "Postgres connection error");
-            }
-        });
-
+        let client = connect_postgres(connection_string).await?;
         let store = Self { client };
         store.ensure_schema().await?;
 
@@ -98,6 +88,12 @@ impl PostgresStateStore {
         let store = Self { client };
         store.ensure_schema().await?;
         Ok(store)
+    }
+
+    /// Get a reference to the underlying client.
+    /// Useful for sharing the connection with other components (e.g., replication setup).
+    pub fn client(&self) -> &Client {
+        &self.client
     }
 
     /// Ensure all required tables exist.

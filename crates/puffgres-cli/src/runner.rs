@@ -92,7 +92,9 @@ pub async fn run_cdc_loop(
         ..Default::default()
     };
 
-    let mut stream = ReplicationStream::connect(repl_config)
+    // Use state_store's connection for control plane operations (slot/publication setup)
+    // pgwire-replication handles only the replication plane
+    let mut stream = ReplicationStream::connect(repl_config, state_store.client())
         .await
         .context("Failed to connect for streaming replication")?;
 

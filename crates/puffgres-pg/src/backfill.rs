@@ -7,10 +7,11 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use puffgres_core::{Operation, RowEvent, Value};
-use tokio_postgres::{Client, NoTls, Row};
+use tokio_postgres::{Client, Row};
 use tracing::{debug, info};
 
-use crate::error::{PgError, PgResult};
+use crate::connect::connect_postgres;
+use crate::error::PgResult;
 
 /// Configuration for backfill scanning.
 #[derive(Debug, Clone)]
@@ -78,15 +79,7 @@ pub struct BackfillScanner {
 impl BackfillScanner {
     /// Create a new backfill scanner.
     pub async fn new(config: BackfillConfig) -> PgResult<Self> {
-        let (client, connection) = tokio_postgres::connect(&config.connection_string, NoTls)
-            .await
-            .map_err(|e| PgError::Connection(e.to_string()))?;
-
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!("Postgres connection error: {}", e);
-            }
-        });
+        let client = connect_postgres(&config.connection_string).await?;
 
         let mut scanner = Self {
             client,

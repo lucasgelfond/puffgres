@@ -1,4 +1,5 @@
 pub mod backfill;
+mod connect;
 mod error;
 pub mod migrations;
 pub mod replication;

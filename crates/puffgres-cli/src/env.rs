@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use tracing::info;
+use tracing::{info, warn};
 
 /// Default batch size for processing transforms (rows per batch).
 pub const DEFAULT_TRANSFORM_BATCH_SIZE: usize = 100;
@@ -9,6 +9,20 @@ pub const DEFAULT_UPLOAD_BATCH_SIZE: usize = 500;
 
 /// Default maximum retries for failed turbopuffer uploads.
 pub const DEFAULT_MAX_RETRIES: u32 = 5;
+
+/// Warn if the database URL appears to be using a connection pooler.
+/// Logical replication requires a direct connection to Postgres and does not work
+/// through connection poolers like PgBouncer.
+pub fn warn_if_pooler_url(url: &str) {
+    // Check for common pooler indicators in the hostname
+    // Most poolers add "-pooler" to the hostname (e.g., Neon, Supabase)
+    if url.contains("-pooler.") || url.contains("-pooler:") {
+        warn!(
+            "DATABASE_URL appears to use a connection pooler (-pooler in hostname). \
+             Logical replication requires a direct connection to Postgres and will not work through a pooler."
+        );
+    }
+}
 
 /// Check if all required puffgres environment variables are set.
 /// Returns true if DATABASE_URL, TURBOPUFFER_API_KEY, and PUFFGRES_BASE_NAMESPACE are all present.
@@ -324,5 +338,34 @@ mod tests {
             !has_all_env_vars(),
             "Should return false when no env vars are set"
         );
+    }
+
+    #[test]
+    fn test_warn_if_pooler_url_detects_pooler_with_dot() {
+        // This test verifies the function runs without panic on pooler URLs
+        // The actual warning is logged via tracing, which we're not capturing here
+        warn_if_pooler_url(
+            "postgresql://user:pass@ep-snowy-bar-a1b2c3d4-pooler.us-east-1.aws.neon.tech/db",
+        );
+    }
+
+    #[test]
+    fn test_warn_if_pooler_url_detects_pooler_with_port() {
+        // Test pooler detection when followed by a port
+        warn_if_pooler_url("postgresql://user:pass@mydb-pooler:5432/db");
+    }
+
+    #[test]
+    fn test_warn_if_pooler_url_no_warning_for_direct_connection() {
+        // This should not trigger a warning (no -pooler in hostname)
+        warn_if_pooler_url(
+            "postgresql://user:pass@ep-snowy-bar-a1b2c3d4.us-east-1.aws.neon.tech/db",
+        );
+    }
+
+    #[test]
+    fn test_warn_if_pooler_url_no_warning_for_localhost() {
+        // Localhost should not trigger a warning
+        warn_if_pooler_url("postgresql://user:pass@localhost:5432/db");
     }
 }

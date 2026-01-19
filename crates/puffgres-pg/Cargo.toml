@@ -21,3 +21,7 @@ uuid = { workspace = true }
 pgwire-replication = "0.1"
 byteorder = "1.5"
 url = "2.5"
+percent-encoding = "2.3"
+tokio-postgres-rustls-improved = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }

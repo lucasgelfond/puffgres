@@ -1,0 +1,25 @@
+# Migration for users table
+version = 1
+mapping_name = "users_public"
+namespace = "users-demo-namespace"
+columns = ["id", "name", "email"]
+
+[source]
+schema = "public"
+table = "users"
+
+[id]
+column = "id"
+type = "uint"
+
+# Optional: filter which rows to sync
+# [membership]
+# mode = "dsl"
+# predicate = "status = 'active'"
+
+[versioning]
+mode = "source_lsn"
+
+# Optional: custom transform
+# [transform]
+# path = "./transforms/users.ts"
