@@ -32,3 +32,7 @@ This project was inspired by reading Martin Kleppman’s *Designing Data-Intensi
 This package makes extensive use of prior art; particularly of use were [wal2json](https://github.com/eulerto/wal2json), [pgwire-replication](https://github.com/vnvo/pgwire-replication), [supabase/etl](https://github.com/supabase/etl).
 
 There were no good turbopuffer Rust clients (the others I saw were largely untyped), so I cloned the Go/TS/Ruby/Java clients and had Claude build (and test!) a Rust one. I figured it was better to split out versus keep in this repo because it is more broadly useful. You can find it at [rs-puff](https://github.com/lucasgelfond/rs-puff) or with `cargo add rs-puff`
+
+## Areas of future work (open to PRs!)
+
+- Support for other package managers than pnpm

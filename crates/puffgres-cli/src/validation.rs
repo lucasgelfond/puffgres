@@ -7,8 +7,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
-use puffgres_config::MigrationConfig;
-use puffgres_pg::{LocalMigration, PostgresStateStore};
+use puffgres_config::{IdTypeConfig, MigrationConfig};
+use puffgres_pg::{IdColumnSample, LocalMigration, PostgresStateStore};
 
 use crate::config::ProjectConfig;
 
@@ -254,6 +254,167 @@ pub async fn store_transform(
         .store_transform(mapping_name, version, content, &hash)
         .await
         .context("Failed to store transform")?;
+
+    Ok(())
+}
+
+// -------------------------------------------------------------------------
+// ID Column Type Validation
+// -------------------------------------------------------------------------
+
+/// Infer the ID type from sampled column values and PostgreSQL type.
+///
+/// Type inference logic:
+/// - PostgreSQL `uuid` type → Uuid
+/// - PostgreSQL `int2/int4/int8/serial/bigserial/integer/smallint/bigint` → Uint (if all positive) or Int
+/// - All values parse as UUID → Uuid
+/// - All values parse as integers → Uint (if all non-negative) or Int
+/// - Fallback → String
+pub fn infer_id_type(sample: &IdColumnSample) -> IdTypeConfig {
+    let pg_type = sample.pg_type.to_lowercase();
+
+    // Check PostgreSQL native type first
+    if pg_type == "uuid" {
+        return IdTypeConfig::Uuid;
+    }
+
+    // Check for integer types in PostgreSQL
+    let is_pg_integer = matches!(
+        pg_type.as_str(),
+        "integer" | "int" | "int2" | "int4" | "int8" | "smallint" | "bigint" | "serial" | "bigserial"
+    );
+
+    if is_pg_integer {
+        // Check if all values are non-negative
+        let all_non_negative = sample.values.iter().all(|v| {
+            v.parse::<i64>()
+                .map(|n| n >= 0)
+                .unwrap_or(false)
+        });
+        return if all_non_negative {
+            IdTypeConfig::Uint
+        } else {
+            IdTypeConfig::Int
+        };
+    }
+
+    // If not a known PostgreSQL type, try to infer from values
+    if sample.values.is_empty() {
+        // Empty table, can't infer - default to String (safest)
+        return IdTypeConfig::String;
+    }
+
+    // Try UUID parsing
+    let all_uuid = sample.values.iter().all(|v| {
+        uuid::Uuid::parse_str(v).is_ok()
+    });
+    if all_uuid {
+        return IdTypeConfig::Uuid;
+    }
+
+    // Try integer parsing
+    let parsed_ints: Vec<Option<i64>> = sample
+        .values
+        .iter()
+        .map(|v| v.parse::<i64>().ok())
+        .collect();
+
+    let all_integers = parsed_ints.iter().all(|v| v.is_some());
+    if all_integers {
+        let all_non_negative = parsed_ints.iter().all(|v| v.unwrap() >= 0);
+        return if all_non_negative {
+            IdTypeConfig::Uint
+        } else {
+            IdTypeConfig::Int
+        };
+    }
+
+    // Fallback to String
+    IdTypeConfig::String
+}
+
+/// Check if sampled values are compatible with the configured ID type.
+///
+/// Returns true if the values match the configured type.
+pub fn values_match_type(sample: &IdColumnSample, configured: IdTypeConfig) -> bool {
+    // Empty samples are always valid (can't disprove compatibility)
+    if sample.values.is_empty() {
+        return true;
+    }
+
+    match configured {
+        IdTypeConfig::Uuid => {
+            // PostgreSQL uuid type is always valid
+            if sample.pg_type.to_lowercase() == "uuid" {
+                return true;
+            }
+            // Otherwise check if all values parse as UUID
+            sample.values.iter().all(|v| uuid::Uuid::parse_str(v).is_ok())
+        }
+        IdTypeConfig::Uint => {
+            // Check if all values are non-negative integers
+            sample.values.iter().all(|v| {
+                v.parse::<i64>()
+                    .map(|n| n >= 0)
+                    .unwrap_or(false)
+            })
+        }
+        IdTypeConfig::Int => {
+            // Check if all values are integers (positive or negative)
+            sample.values.iter().all(|v| v.parse::<i64>().is_ok())
+        }
+        IdTypeConfig::String => {
+            // String accepts anything
+            true
+        }
+    }
+}
+
+/// Validate that the ID column type matches the configured type.
+///
+/// Samples up to 5 rows and checks if values are compatible with the configured type.
+/// Returns an error with a helpful message if there's a mismatch.
+pub async fn validate_id_column_type(
+    store: &PostgresStateStore,
+    schema: &str,
+    table: &str,
+    column: &str,
+    configured_type: IdTypeConfig,
+    version: i32,
+    mapping_name: &str,
+) -> Result<()> {
+    let sample = store
+        .sample_id_column(schema, table, column, 5)
+        .await
+        .context("Failed to sample ID column")?;
+
+    if !values_match_type(&sample, configured_type) {
+        let inferred_type = infer_id_type(&sample);
+
+        let sample_display: Vec<&str> = sample.values.iter().take(5).map(|s| s.as_str()).collect();
+
+        anyhow::bail!(
+            "ID column type mismatch in migration v{} '{}':\n\
+             Table '{}.{}' column '{}' is configured as '{:?}', but sampled values suggest '{:?}'.\n\
+             Sampled values: {:?}\n\
+             PostgreSQL column type: {}\n\n\
+             To fix: Update the [id] section in your migration config:\n\
+             [id]\n\
+             column = \"{}\"\n\
+             type = \"{}\"",
+            version,
+            mapping_name,
+            schema,
+            table,
+            column,
+            configured_type,
+            inferred_type,
+            sample_display,
+            sample.pg_type,
+            column,
+            format!("{:?}", inferred_type).to_lowercase()
+        );
+    }
 
     Ok(())
 }
@@ -519,5 +680,149 @@ mode = "source_lsn"
         std::env::set_current_dir(original_dir).unwrap();
 
         assert!(result.is_ok(), "console.error should be allowed");
+    }
+
+    // -------------------------------------------------------------------------
+    // ID Column Type Validation Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_infer_id_type_uuid_from_pg_type() {
+        let sample = IdColumnSample {
+            values: vec!["52d91dc3-165c-4a7f-878e-c38450eeecec".to_string()],
+            pg_type: "uuid".to_string(),
+        };
+        assert_eq!(infer_id_type(&sample), IdTypeConfig::Uuid);
+    }
+
+    #[test]
+    fn test_infer_id_type_uuid_from_values() {
+        // UUID strings in a text column should be inferred as UUID
+        let sample = IdColumnSample {
+            values: vec![
+                "52d91dc3-165c-4a7f-878e-c38450eeecec".to_string(),
+                "52d986a9-598c-48e6-8441-71f4f3a9402c".to_string(),
+            ],
+            pg_type: "text".to_string(),
+        };
+        assert_eq!(infer_id_type(&sample), IdTypeConfig::Uuid);
+    }
+
+    #[test]
+    fn test_infer_id_type_uint_from_positive_integers() {
+        let sample = IdColumnSample {
+            values: vec!["1".to_string(), "2".to_string(), "100".to_string()],
+            pg_type: "integer".to_string(),
+        };
+        assert_eq!(infer_id_type(&sample), IdTypeConfig::Uint);
+    }
+
+    #[test]
+    fn test_infer_id_type_int_from_negative_integers() {
+        let sample = IdColumnSample {
+            values: vec!["-1".to_string(), "2".to_string(), "100".to_string()],
+            pg_type: "integer".to_string(),
+        };
+        assert_eq!(infer_id_type(&sample), IdTypeConfig::Int);
+    }
+
+    #[test]
+    fn test_infer_id_type_uint_from_bigint() {
+        let sample = IdColumnSample {
+            values: vec!["1".to_string(), "9999999999".to_string()],
+            pg_type: "bigint".to_string(),
+        };
+        assert_eq!(infer_id_type(&sample), IdTypeConfig::Uint);
+    }
+
+    #[test]
+    fn test_infer_id_type_string_from_text_values() {
+        let sample = IdColumnSample {
+            values: vec!["abc123".to_string(), "user_42".to_string()],
+            pg_type: "text".to_string(),
+        };
+        assert_eq!(infer_id_type(&sample), IdTypeConfig::String);
+    }
+
+    #[test]
+    fn test_infer_id_type_empty_returns_string() {
+        let sample = IdColumnSample {
+            values: vec![],
+            pg_type: "text".to_string(),
+        };
+        assert_eq!(infer_id_type(&sample), IdTypeConfig::String);
+    }
+
+    #[test]
+    fn test_values_match_type_uuid_valid() {
+        let sample = IdColumnSample {
+            values: vec![
+                "52d91dc3-165c-4a7f-878e-c38450eeecec".to_string(),
+                "52d986a9-598c-48e6-8441-71f4f3a9402c".to_string(),
+            ],
+            pg_type: "uuid".to_string(),
+        };
+        assert!(values_match_type(&sample, IdTypeConfig::Uuid));
+    }
+
+    #[test]
+    fn test_values_match_type_uuid_invalid() {
+        // Integer values don't match UUID config
+        let sample = IdColumnSample {
+            values: vec!["1".to_string(), "2".to_string()],
+            pg_type: "integer".to_string(),
+        };
+        assert!(!values_match_type(&sample, IdTypeConfig::Uuid));
+    }
+
+    #[test]
+    fn test_values_match_type_uint_valid() {
+        let sample = IdColumnSample {
+            values: vec!["1".to_string(), "100".to_string(), "0".to_string()],
+            pg_type: "integer".to_string(),
+        };
+        assert!(values_match_type(&sample, IdTypeConfig::Uint));
+    }
+
+    #[test]
+    fn test_values_match_type_uint_invalid_negative() {
+        // Negative values don't match Uint config
+        let sample = IdColumnSample {
+            values: vec!["1".to_string(), "-5".to_string()],
+            pg_type: "integer".to_string(),
+        };
+        assert!(!values_match_type(&sample, IdTypeConfig::Uint));
+    }
+
+    #[test]
+    fn test_values_match_type_int_valid_with_negatives() {
+        let sample = IdColumnSample {
+            values: vec!["1".to_string(), "-5".to_string(), "100".to_string()],
+            pg_type: "integer".to_string(),
+        };
+        assert!(values_match_type(&sample, IdTypeConfig::Int));
+    }
+
+    #[test]
+    fn test_values_match_type_string_always_valid() {
+        // String type accepts any values
+        let sample = IdColumnSample {
+            values: vec!["anything".to_string(), "123".to_string(), "uuid-like".to_string()],
+            pg_type: "text".to_string(),
+        };
+        assert!(values_match_type(&sample, IdTypeConfig::String));
+    }
+
+    #[test]
+    fn test_values_match_type_empty_always_valid() {
+        // Empty table passes validation for any type
+        let sample = IdColumnSample {
+            values: vec![],
+            pg_type: "integer".to_string(),
+        };
+        assert!(values_match_type(&sample, IdTypeConfig::Uuid));
+        assert!(values_match_type(&sample, IdTypeConfig::Uint));
+        assert!(values_match_type(&sample, IdTypeConfig::Int));
+        assert!(values_match_type(&sample, IdTypeConfig::String));
     }
 }

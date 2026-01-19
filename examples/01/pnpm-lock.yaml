@@ -14,6 +14,9 @@ importers:
       puffgres:
         specifier: link:../../npm
         version: link:../../npm
+      together-ai:
+        specifier: ^0.33.0
+        version: 0.33.0
     devDependencies:
       tsx:
         specifier: ^4.21.0
@@ -199,6 +202,10 @@ packages:
   resolve-pkg-maps@1.0.0:
     resolution: {integrity: sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw==}
 
+  together-ai@0.33.0:
+    resolution: {integrity: sha512-2JdxYwbw+Xw2bW2PHBGqbMTtYsQHoWO9UXvdwIfQkde/swoKp2x/hpxEjtTERzrMP4O5SdDPGxsjfcPXewDJ9A==}
+    hasBin: true
+
   tsx@4.21.0:
     resolution: {integrity: sha512-5C1sg4USs1lfG0GFb2RLXsdpXqBSEhAaA/0kPL01wxzpMqLILNxIxIOKiILz+cdg/pLnOUxFYOR5yhHU666wbw==}
     engines: {node: '>=18.0.0'}
@@ -327,6 +334,8 @@ snapshots:
       base64-js: 1.5.1
 
   resolve-pkg-maps@1.0.0: {}
+
+  together-ai@0.33.0: {}
 
   tsx@4.21.0:
     dependencies:

@@ -96,7 +96,7 @@ api_key = "${TURBOPUFFER_API_KEY}"
     println!("\n{}", "Puffgres initialized!".green().bold());
     println!("\nNext steps:");
     println!("  1. Copy .env.example to .env and fill in your credentials");
-    println!("  2. Run: npm install (or pnpm install)");
+    println!("  2. Run: pnpm install");
     println!("  3. Run: puffgres setup");
     println!("  4. Run: puffgres new <table_name>");
     println!("  5. Run: puffgres migrate");

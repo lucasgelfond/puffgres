@@ -1,14 +1,23 @@
 import type { RowEvent, Action, TransformContext, DocumentId } from 'puffgres';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
+import Together from 'together-ai';
 
 // Cache the tokenizer instance
 let tokenizer: Tiktoken | null = null;
+let togetherClient: Together | null = null;
 
 function getTokenizer(): Tiktoken {
   if (!tokenizer) {
     tokenizer = getEncoding('cl100k_base');
   }
   return tokenizer;
+}
+
+function getTogetherClient(apiKey: string): Together {
+  if (!togetherClient) {
+    togetherClient = new Together({ apiKey });
+  }
+  return togetherClient;
 }
 
 function truncateToTokens(text: string, maxTokens: number): string {
@@ -22,25 +31,12 @@ function truncateToTokens(text: string, maxTokens: number): string {
 }
 
 async function embedWithTogether(text: string, apiKey: string): Promise<number[]> {
-  const response = await fetch('https://api.together.xyz/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: 'BAAI/bge-base-en-v1.5',
-      input: text,
-    }),
+  const client = getTogetherClient(apiKey);
+  const response = await client.embeddings.create({
+    model: 'BAAI/bge-base-en-v1.5',
+    input: text,
   });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Together AI error: ${error}`);
-  }
-
-  const data = await response.json() as { data: Array<{ embedding: number[] }> };
-  return data.data[0].embedding;
+  return response.data[0].embedding;
 }
 
 export default async function transform(
@@ -55,11 +51,12 @@ export default async function transform(
   const row = event.new!;
 
   // Combine name and email
-  const combinedText = [row.name, row.email].filter(Boolean).join(' ');
+  const combinedText = [row.ocr_result].filter(Boolean).join(' ');
 
   // Tokenize and truncate to 512 tokens
   const truncatedText = truncateToTokens(combinedText, 512);
 
+  // Use console.error for debug output
   console.error('truncatedText', truncatedText);
 
   // Embed using Together AI with BAAI/bge-base-en-v1.5
@@ -70,9 +67,9 @@ export default async function transform(
     id,
     doc: {
       id: row.id,
-      email: row.email,
-      name: row.name,
+      ocr_result: row.ocr_result,
       vector: embedding,
     },
+    distance_metric: 'cosine_distance',
   };
 }

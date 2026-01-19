@@ -12,5 +12,6 @@ pub use replication::{
     format_lsn, parse_lsn, ReplicationStream, ReplicationStreamConfig, StreamingBatch,
 };
 pub use state::{
-    AppliedMigration, BackfillProgress, Checkpoint, DlqEntry, PostgresStateStore, StoredTransform,
+    AppliedMigration, BackfillProgress, Checkpoint, DlqEntry, IdColumnSample, PostgresStateStore,
+    StoredTransform,
 };

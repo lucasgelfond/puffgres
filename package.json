@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "puffgres": "^0.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0"
+  },
+  "name": "my-puffgres-project",
+  "private": true,
+  "scripts": {
+    "backfill": "puffgres backfill",
+    "migrate": "puffgres migrate",
+    "start": "puffgres run",
+    "status": "puffgres status"
+  },
+  "type": "module"
+}

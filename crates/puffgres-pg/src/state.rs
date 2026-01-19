@@ -31,6 +31,15 @@ pub struct AppliedMigration {
     pub applied_at: DateTime<Utc>,
 }
 
+/// Result of sampling ID column values for type validation.
+#[derive(Debug, Clone)]
+pub struct IdColumnSample {
+    /// Sample values from the column (cast to text).
+    pub values: Vec<String>,
+    /// PostgreSQL data type of the column.
+    pub pg_type: String,
+}
+
 /// Dead letter queue entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DlqEntry {
@@ -795,6 +804,58 @@ impl PostgresStateStore {
         Ok(())
     }
 
+    /// Sample ID column values from a table for type validation.
+    ///
+    /// Returns sample values (cast to text) and the PostgreSQL data type of the column.
+    pub async fn sample_id_column(
+        &self,
+        schema: &str,
+        table: &str,
+        column: &str,
+        sample_size: usize,
+    ) -> PgResult<IdColumnSample> {
+        // Query the PostgreSQL column type from information_schema
+        let type_row = self
+            .client
+            .query_opt(
+                r#"
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
+                "#,
+                &[&schema, &table, &column],
+            )
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        let pg_type = type_row
+            .map(|r| r.get::<_, String>(0))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Query sample values, casting to text for uniform handling
+        // Using a dynamic query since column names can't be parameterized
+        let query = format!(
+            "SELECT {}::text FROM {}.{} LIMIT $1",
+            quote_identifier(column),
+            quote_identifier(schema),
+            quote_identifier(table)
+        );
+
+        let sample_size_i64 = sample_size as i64;
+        let rows = self
+            .client
+            .query(&query, &[&sample_size_i64])
+            .await
+            .map_err(|e| PgError::Postgres(e.to_string()))?;
+
+        let values: Vec<String> = rows
+            .into_iter()
+            .filter_map(|r| r.get::<_, Option<String>>(0))
+            .collect();
+
+        Ok(IdColumnSample { values, pg_type })
+    }
+
     // -------------------------------------------------------------------------
     // Cleanup methods
     // -------------------------------------------------------------------------
@@ -834,9 +895,23 @@ impl PostgresStateStore {
     }
 }
 
+/// Quote a PostgreSQL identifier (table name, column name, etc.) to prevent SQL injection.
+fn quote_identifier(ident: &str) -> String {
+    // Double any quotes and wrap in quotes
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_quote_identifier() {
+        assert_eq!(quote_identifier("id"), "\"id\"");
+        assert_eq!(quote_identifier("user_id"), "\"user_id\"");
+        // Test escaping quotes
+        assert_eq!(quote_identifier("weird\"name"), "\"weird\"\"name\"");
+    }
 
     #[test]
     fn test_checkpoint_default() {

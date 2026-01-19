@@ -29,6 +29,7 @@ dialoguer = { workspace = true }
 colored = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 serial_test = "3.3.1"

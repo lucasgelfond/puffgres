@@ -1,15 +1,15 @@
-# Migration for vectortest table
+# Migration for pageembed table
 version = 1
-mapping_name = "vectortest_public"
-namespace = "vectortest"
+mapping_name = "pageembed_public"
+namespace = "pageembed"
 
 [source]
 schema = "public"
-table = "users"
+table = "page"
 
 [id]
 column = "id"
-type = "uint"
+type = "uuid"
 
 # Optional: filter which rows to sync
 # [membership]
@@ -21,4 +21,4 @@ mode = "source_lsn"
 
 [transform]
 type = "js"
-path = "./puffgres/transforms/vectortest.ts"
+path = "./puffgres/transforms/pageembed.ts"

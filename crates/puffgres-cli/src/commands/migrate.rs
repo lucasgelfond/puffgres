@@ -8,8 +8,8 @@ use tracing::info;
 
 use crate::config::ProjectConfig;
 use crate::validation::{
-    store_transform, validate_no_console_log_in_transforms, validate_no_unreferenced_transforms,
-    validate_transforms,
+    store_transform, validate_id_column_type, validate_no_console_log_in_transforms,
+    validate_no_unreferenced_transforms, validate_transforms,
 };
 
 pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
@@ -65,6 +65,22 @@ pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
                 "{}",
                 "Create the table in your database before applying this migration.".yellow()
             );
+            std::process::exit(1);
+        }
+
+        // Validate ID column type matches the data
+        if let Err(e) = validate_id_column_type(
+            &store,
+            schema,
+            table,
+            &migration_config.id.column,
+            migration_config.id.id_type,
+            migration.version,
+            &migration.mapping_name,
+        )
+        .await
+        {
+            eprintln!("{}", format!("Error: {}", e).red());
             std::process::exit(1);
         }
     }

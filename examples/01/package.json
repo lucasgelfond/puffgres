@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "js-tiktoken": "^1.0.21",
-    "puffgres": "link:../../npm"
+    "puffgres": "link:../../npm",
+    "together-ai": "^0.33.0"
   },
   "devDependencies": {
     "tsx": "^4.21.0"
