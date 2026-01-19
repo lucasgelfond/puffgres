@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -9,10 +7,6 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
-
-    /// Path to puffgres.toml config file
-    #[arg(short, long, default_value = "puffgres.toml")]
-    pub config: PathBuf,
 }
 
 #[derive(Subcommand)]

@@ -19,7 +19,6 @@ pub async fn cmd_dangerously_delete_config(config: ProjectConfig) -> Result<()> 
     println!("    - __puffgres_backfill");
     println!("    - __puffgres_transforms");
     println!("  • Remove local puffgres/ directory");
-    println!("  • Remove puffgres.toml");
     println!();
     println!("{}", "This action may be difficult to recover from!".red());
     println!();
@@ -55,11 +54,6 @@ pub async fn cmd_dangerously_delete_config(config: ProjectConfig) -> Result<()> 
     if Path::new("puffgres").exists() {
         fs::remove_dir_all("puffgres")?;
         println!("  ✓ Removed puffgres/ directory");
-    }
-
-    if Path::new("puffgres.toml").exists() {
-        fs::remove_file("puffgres.toml")?;
-        println!("  ✓ Removed puffgres.toml");
     }
 
     println!("\n{}", "Puffgres configuration deleted.".green());

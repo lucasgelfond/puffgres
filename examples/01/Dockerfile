@@ -8,8 +8,9 @@ RUN apt-get update && apt-get install -y git pkg-config libssl-dev && rm -rf /va
 
 WORKDIR /build
 
-# Clone and build puffgres from source
+# Clone and build puffgres from source (cache bust: change date to force rebuild)
 RUN git clone https://github.com/lucasgelfond/puffgres.git . && \
+    git log --oneline -1 && \
     cargo build --release --package puffgres-cli && \
     cp target/release/puffgres /usr/local/bin/puffgres
 

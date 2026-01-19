@@ -47,35 +47,6 @@ TURBOPUFFER_API_KEY=
         println!(".env.example already exists, skipping");
     }
 
-    // Create puffgres.toml config
-    let config = r#"# Puffgres configuration
-# Secrets are loaded from .env file
-# State is stored in __puffgres_* tables in your Postgres database
-
-[postgres]
-connection_string = "${DATABASE_URL}"
-
-[turbopuffer]
-api_key = "${TURBOPUFFER_API_KEY}"
-
-# Optional: Namespace prefix for environment separation
-# base_namespace = "${PUFFGRES_BASE_NAMESPACE}"
-
-# Optional: Configure embedding providers for transforms
-# [providers.embeddings]
-# type = "together"
-# model = "BAAI/bge-base-en-v1.5"
-# api_key = "${TOGETHER_API_KEY}"
-"#;
-
-    let config_path = Path::new("puffgres.toml");
-    if !config_path.exists() {
-        fs::write(config_path, config)?;
-        println!("Created puffgres.toml");
-    } else {
-        println!("puffgres.toml already exists, skipping");
-    }
-
     // Create .gitignore in puffgres directory
     let gitignore = "# Local transform builds\nnode_modules/\n";
     let gitignore_path = Path::new("puffgres/.gitignore");

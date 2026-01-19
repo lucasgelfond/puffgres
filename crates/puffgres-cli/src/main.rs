@@ -1,6 +1,3 @@
-use std::fs;
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 use clap::Parser;
 
@@ -41,12 +38,12 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init => commands::cmd_init().await,
         Commands::Setup => {
-            let config = load_config(&cli.config)?;
+            let config = load_config();
             commands::cmd_setup(config).await
         }
         Commands::New { name } => commands::cmd_new(name).await,
         Commands::Migrate { dry_run } => {
-            let config = load_config(&cli.config)?;
+            let config = load_config();
             commands::cmd_migrate(config, dry_run).await
         }
         Commands::Run {
@@ -55,11 +52,11 @@ async fn main() -> Result<()> {
             create_slot,
             skip_migrate,
         } => {
-            let config = load_config(&cli.config)?;
+            let config = load_config();
             commands::cmd_run(config, &slot, &publication, create_slot, skip_migrate).await
         }
         Commands::Status => {
-            let config = load_config(&cli.config)?;
+            let config = load_config();
             commands::cmd_status(config).await
         }
         Commands::Backfill {
@@ -67,36 +64,40 @@ async fn main() -> Result<()> {
             batch_size,
             resume,
         } => {
-            let config = load_config(&cli.config)?;
+            let config = load_config();
             cmd_backfill(config, &mapping, batch_size, resume).await
         }
         Commands::Dlq { command } => {
-            let config = load_config(&cli.config)?;
+            let config = load_config();
             cmd_dlq(config, command).await
         }
         Commands::Reset => {
-            let config = load_config(&cli.config)?;
+            let config = load_config();
             commands::cmd_reset(config).await
         }
         Commands::DangerouslyDeleteConfig => {
-            let config = load_config(&cli.config)?;
+            let config = load_config();
             commands::cmd_dangerously_delete_config(config).await
         }
         Commands::DangerouslyResetTurbopuffer => {
-            let config = load_config(&cli.config)?;
+            let config = load_config();
             commands::cmd_dangerously_reset_turbopuffer(config).await
         }
     }
 }
 
-fn load_config(path: &PathBuf) -> Result<ProjectConfig> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-
-    let config: ProjectConfig =
-        toml::from_str(&content).with_context(|| "Failed to parse puffgres.toml")?;
-
-    Ok(config)
+fn load_config() -> ProjectConfig {
+    // Always read from environment variables
+    ProjectConfig {
+        postgres: config::PostgresConfig {
+            connection_string: "${DATABASE_URL}".to_string(),
+        },
+        turbopuffer: config::TurbopufferConfig {
+            api_key: "${TURBOPUFFER_API_KEY}".to_string(),
+            base_namespace: Some("${PUFFGRES_BASE_NAMESPACE}".to_string()),
+        },
+        providers: config::ProvidersConfig::default(),
+    }
 }
 
 async fn cmd_backfill(
