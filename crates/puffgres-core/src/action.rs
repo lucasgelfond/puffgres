@@ -16,6 +16,9 @@ pub enum Action {
         id: DocumentId,
         /// The document to upsert.
         doc: Document,
+        /// Distance metric for vector fields.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        distance_metric: Option<rs_puff::DistanceMetric>,
     },
     /// Delete a document from the namespace.
     Delete {
@@ -187,7 +190,24 @@ impl ErrorKind {
 impl Action {
     /// Create an upsert action.
     pub fn upsert(id: impl Into<DocumentId>, doc: Document) -> Self {
-        Action::Upsert { id: id.into(), doc }
+        Action::Upsert {
+            id: id.into(),
+            doc,
+            distance_metric: None,
+        }
+    }
+
+    /// Create an upsert action with a distance metric for vector fields.
+    pub fn upsert_with_metric(
+        id: impl Into<DocumentId>,
+        doc: Document,
+        distance_metric: rs_puff::DistanceMetric,
+    ) -> Self {
+        Action::Upsert {
+            id: id.into(),
+            doc,
+            distance_metric: Some(distance_metric),
+        }
     }
 
     /// Create a delete action.

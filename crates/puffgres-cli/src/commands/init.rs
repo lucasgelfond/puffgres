@@ -16,6 +16,9 @@ pub async fn cmd_init() -> Result<()> {
     fs::create_dir_all("puffgres/transforms")?;
     info!("Created puffgres/migrations/ and puffgres/transforms/");
 
+    // Create or update package.json with required dependencies
+    ensure_package_json()?;
+
     // Only create .env files if not all variables are already available
     if has_all_env_vars() {
         println!(
@@ -111,11 +114,80 @@ api_key = "${TURBOPUFFER_API_KEY}"
     println!("\n{}", "Puffgres initialized!".green().bold());
     println!("\nNext steps:");
     println!("  1. Fill in your credentials in .env");
-    println!("  2. Run: puffgres setup");
-    println!("  3. Run: puffgres new <table_name>");
-    println!("  4. Run: puffgres migrate");
-    println!("  5. Run: puffgres backfill <mapping_name>");
-    println!("  6. Run: puffgres run\n");
+    println!("  2. Run: npm install (or pnpm install)");
+    println!("  3. Run: puffgres setup");
+    println!("  4. Run: puffgres new <table_name>");
+    println!("  5. Run: puffgres migrate");
+    println!("  6. Run: puffgres backfill <mapping_name>");
+    println!("  7. Run: puffgres run\n");
+
+    Ok(())
+}
+
+/// Ensure package.json exists with required dependencies for transforms.
+fn ensure_package_json() -> Result<()> {
+    let package_json_path = Path::new("package.json");
+
+    if package_json_path.exists() {
+        // Read existing package.json and check for tsx
+        let content = fs::read_to_string(package_json_path)?;
+        let mut pkg: serde_json::Value = serde_json::from_str(&content)?;
+
+        let mut modified = false;
+
+        // Ensure devDependencies exists
+        if pkg.get("devDependencies").is_none() {
+            pkg["devDependencies"] = serde_json::json!({});
+        }
+
+        // Add tsx if not present
+        if pkg["devDependencies"].get("tsx").is_none() {
+            pkg["devDependencies"]["tsx"] = serde_json::json!("^4.7.0");
+            modified = true;
+        }
+
+        // Ensure dependencies exists
+        if pkg.get("dependencies").is_none() {
+            pkg["dependencies"] = serde_json::json!({});
+        }
+
+        // Add puffgres if not present
+        if pkg["dependencies"].get("puffgres").is_none() {
+            pkg["dependencies"]["puffgres"] = serde_json::json!("^0.1.0");
+            modified = true;
+        }
+
+        if modified {
+            let formatted = serde_json::to_string_pretty(&pkg)?;
+            fs::write(package_json_path, formatted)?;
+            println!("Updated package.json with puffgres dependencies");
+        } else {
+            println!("package.json already has required dependencies");
+        }
+    } else {
+        // Create new package.json
+        let pkg = serde_json::json!({
+            "name": "my-puffgres-project",
+            "private": true,
+            "type": "module",
+            "scripts": {
+                "start": "puffgres run",
+                "migrate": "puffgres migrate",
+                "status": "puffgres status",
+                "backfill": "puffgres backfill"
+            },
+            "dependencies": {
+                "puffgres": "^0.1.0"
+            },
+            "devDependencies": {
+                "tsx": "^4.7.0"
+            }
+        });
+
+        let formatted = serde_json::to_string_pretty(&pkg)?;
+        fs::write(package_json_path, formatted)?;
+        println!("Created package.json with puffgres dependencies");
+    }
 
     Ok(())
 }

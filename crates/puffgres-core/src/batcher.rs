@@ -129,6 +129,8 @@ pub struct WriteRequest {
     pub upserts: Vec<UpsertDoc>,
     pub deletes: Vec<crate::action::DocumentId>,
     pub lsn: u64,
+    /// Distance metric for vector fields (from the first upsert with a metric).
+    pub distance_metric: Option<rs_puff::DistanceMetric>,
 }
 
 /// A document to upsert.
@@ -143,10 +145,19 @@ impl WriteRequest {
     pub fn from_batch(batch: Batch) -> Self {
         let mut upserts = Vec::new();
         let mut deletes = Vec::new();
+        let mut distance_metric = None;
 
         for action in batch.actions {
             match action {
-                Action::Upsert { id, doc } => {
+                Action::Upsert {
+                    id,
+                    doc,
+                    distance_metric: dm,
+                } => {
+                    // Take the first non-None distance metric
+                    if distance_metric.is_none() && dm.is_some() {
+                        distance_metric = dm;
+                    }
                     upserts.push(UpsertDoc {
                         id,
                         attributes: doc,
@@ -164,6 +175,7 @@ impl WriteRequest {
             upserts,
             deletes,
             lsn: batch.lsn,
+            distance_metric,
         }
     }
 

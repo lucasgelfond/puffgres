@@ -55,15 +55,15 @@ impl JsTransformer {
         };
 
         // Build the runner command
-        // Uses tsx to run the transform with the event data
+        // The puffgres-transform bin script has #!/usr/bin/env tsx shebang
         let runner_script = self.runner_path.as_deref().unwrap_or("puffgres-transform");
 
         let output = Command::new("npx")
-            .arg("tsx")
             .arg(runner_script)
             .arg(&self.transform_path)
             .arg(event_json.to_string())
             .arg(id_json.to_string())
+            .envs(std::env::vars())
             .output()
             .map_err(|e| Error::TransformError(format!("Failed to run transform: {}", e)))?;
 
@@ -134,7 +134,21 @@ fn parse_action(result: &serde_json::Value, default_id: DocumentId) -> Result<Ac
                 .map(|(k, v)| (k.clone(), json_to_value(v)))
                 .collect();
 
-            Ok(Action::upsert(id, attributes))
+            // Parse distance_metric if present
+            let distance_metric = obj
+                .get("distance_metric")
+                .and_then(|v| v.as_str())
+                .and_then(|s| match s {
+                    "cosine_distance" => Some(rs_puff::DistanceMetric::CosineDistance),
+                    "euclidean_squared" => Some(rs_puff::DistanceMetric::EuclideanSquared),
+                    _ => None,
+                });
+
+            if let Some(metric) = distance_metric {
+                Ok(Action::upsert_with_metric(id, attributes, metric))
+            } else {
+                Ok(Action::upsert(id, attributes))
+            }
         }
         "delete" => {
             let id = parse_id(obj.get("id"), default_id)?;

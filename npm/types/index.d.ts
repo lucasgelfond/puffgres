@@ -26,10 +26,15 @@ export interface RowEvent {
 export type DocumentId = string | number;
 
 /**
+ * Distance metric for vector similarity search.
+ */
+export type DistanceMetric = 'cosine_distance' | 'euclidean_squared';
+
+/**
  * Action returned from transform function.
  */
 export type Action =
-  | { type: 'upsert'; id: DocumentId; doc: Record<string, unknown> }
+  | { type: 'upsert'; id: DocumentId; doc: Record<string, unknown>; distance_metric?: DistanceMetric }
   | { type: 'delete'; id: DocumentId }
   | { type: 'skip' };
 

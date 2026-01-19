@@ -126,7 +126,7 @@
       const allKeys = new Set(['id']);
       rows.forEach(row => {
         Object.keys(row).forEach(k => {
-          if (k !== 'vector' && k !== '$dist') allKeys.add(k);
+          if (k !== '$dist') allKeys.add(k);
         });
       });
       const keys = Array.from(allKeys);
@@ -143,6 +143,10 @@
           let display = '';
           if (val === undefined || val === null) {
             display = '<span style="color:#999">-</span>';
+          } else if (k === 'vector' && Array.isArray(val)) {
+            // Show truncated vector
+            const preview = val.slice(0, 3).map(v => v.toFixed(4)).join(', ');
+            display = `<span style="color:#666; font-family:monospace; font-size:11px">[${preview}, ...] (${val.length}d)</span>`;
           } else if (typeof val === 'object') {
             display = `<pre>${escapeHtml(JSON.stringify(val, null, 2))}</pre>`;
           } else {

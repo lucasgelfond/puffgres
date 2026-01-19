@@ -9,6 +9,7 @@ pub mod transform;
 pub mod types;
 
 pub use action::{Action, Document, DocumentId, ErrorKind};
+pub use rs_puff::DistanceMetric;
 pub use batcher::{Batch, Batcher, UpsertDoc, WriteRequest};
 pub use error::{Error, Result};
 pub use js_transform::JsTransformer;

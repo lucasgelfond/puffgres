@@ -283,6 +283,7 @@ async fn flush_batch(
         let params = rs_puff::WriteParams {
             upsert_rows: Some(chunk.to_vec()),
             deletes: None,
+            distance_metric: request.distance_metric,
             ..Default::default()
         };
 
@@ -294,6 +295,7 @@ async fn flush_batch(
         let params = rs_puff::WriteParams {
             upsert_rows: None,
             deletes: Some(chunk.to_vec()),
+            distance_metric: request.distance_metric,
             ..Default::default()
         };
 

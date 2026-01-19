@@ -1,7 +1,7 @@
 # Migration for newvector table
 version = 3
-mapping_name = "newvector_public"
-namespace = "newvector"
+mapping_name = "another-vec"
+namespace = "anothervec"
 
 [source]
 schema = "public"
@@ -21,4 +21,4 @@ mode = "source_lsn"
 
 [transform]
 type = "js"
-path = "./transforms/newvector.ts"
+path = "./transforms/antohervec.ts"
