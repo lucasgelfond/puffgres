@@ -33,6 +33,10 @@ TURBOPUFFER_API_KEY=
 # Optional: Batch sizes for transform and upload operations
 # PUFFGRES_TRANSFORM_BATCH_SIZE=100
 # PUFFGRES_UPLOAD_BATCH_SIZE=500
+
+# Optional: Maximum retries for failed turbopuffer uploads (default: 5)
+# Uses exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms
+# PUFFGRES_MAX_RETRIES=5
 "#;
 
     let env_example_path = Path::new(".env.example");
@@ -95,37 +99,32 @@ api_key = "${TURBOPUFFER_API_KEY}"
 
     // Create Dockerfile for containerized deployments
     let dockerfile_content = r#"# Dockerfile for puffgres
-# Downloads pre-built Rust binary from GitHub releases
+# Builds puffgres from source
 
-FROM node:22-slim
+# Builder stage - compile Rust binary
+FROM rust:latest AS builder
 
-# Install curl for downloading binary
-RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
-# Set puffgres version (update this or pass as build arg)
-ARG PUFFGRES_VERSION=latest
+WORKDIR /build
 
-# Detect architecture and download appropriate binary
-RUN ARCH=$(uname -m) && \
-    if [ "$ARCH" = "x86_64" ]; then \
-        RUST_TARGET="x86_64-unknown-linux-gnu"; \
-    elif [ "$ARCH" = "aarch64" ]; then \
-        RUST_TARGET="aarch64-unknown-linux-gnu"; \
-    else \
-        echo "Unsupported architecture: $ARCH" && exit 1; \
-    fi && \
-    if [ "$PUFFGRES_VERSION" = "latest" ]; then \
-        DOWNLOAD_URL="https://github.com/lucasgelfond/puffgres/releases/latest/download/puffgres-${RUST_TARGET}.tar.gz"; \
-    else \
-        DOWNLOAD_URL="https://github.com/lucasgelfond/puffgres/releases/download/v${PUFFGRES_VERSION}/puffgres-${RUST_TARGET}.tar.gz"; \
-    fi && \
-    echo "Downloading puffgres from: $DOWNLOAD_URL" && \
-    curl -fsSL "$DOWNLOAD_URL" | tar xz -C /usr/local/bin && \
-    chmod +x /usr/local/bin/puffgres && \
-    puffgres --version
+# Clone and build puffgres from source
+RUN git clone https://github.com/lucasgelfond/puffgres.git . && \
+    cargo build --release --package puffgres-cli && \
+    cp target/release/puffgres /usr/local/bin/puffgres
 
-# Enable corepack for pnpm
-RUN corepack enable
+# Runtime stage - use Debian Trixie to match GLIBC version from rust:latest builder
+FROM debian:trixie-slim
+
+# Install Node.js 22 and OpenSSL runtime library
+RUN apt-get update && apt-get install -y ca-certificates libssl3 curl && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/* && \
+    corepack enable
+
+# Copy the built binary from builder
+COPY --from=builder /usr/local/bin/puffgres /usr/local/bin/puffgres
 
 WORKDIR /app
 
@@ -138,8 +137,16 @@ RUN pnpm install --frozen-lockfile || pnpm install
 # Copy the rest of the application
 COPY . .
 
-# Run the Rust binary directly
-CMD ["puffgres", "run"]
+# Create .env file from environment variables at runtime, then run puffgres
+CMD sh -c 'cat > .env << EOF\n\
+DATABASE_URL=${DATABASE_URL}\n\
+TURBOPUFFER_API_KEY=${TURBOPUFFER_API_KEY}\n\
+PUFFGRES_BASE_NAMESPACE=${PUFFGRES_BASE_NAMESPACE}\n\
+PUFFGRES_TRANSFORM_BATCH_SIZE=${PUFFGRES_TRANSFORM_BATCH_SIZE}\n\
+PUFFGRES_UPLOAD_BATCH_SIZE=${PUFFGRES_UPLOAD_BATCH_SIZE}\n\
+PUFFGRES_MAX_RETRIES=${PUFFGRES_MAX_RETRIES}\n\
+EOF\n\
+puffgres run'
 "#;
 
     let dockerfile_path = Path::new("Dockerfile");

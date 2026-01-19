@@ -37,5 +37,13 @@ RUN pnpm install --frozen-lockfile || pnpm install
 # Copy the rest of the application
 COPY . .
 
-# Run the Rust binary directly
-CMD ["puffgres", "run"]
+# Create .env file from environment variables at runtime, then run puffgres
+CMD sh -c 'cat > .env << EOF\n\
+DATABASE_URL=${DATABASE_URL}\n\
+TURBOPUFFER_API_KEY=${TURBOPUFFER_API_KEY}\n\
+PUFFGRES_BASE_NAMESPACE=${PUFFGRES_BASE_NAMESPACE}\n\
+PUFFGRES_TRANSFORM_BATCH_SIZE=${PUFFGRES_TRANSFORM_BATCH_SIZE}\n\
+PUFFGRES_UPLOAD_BATCH_SIZE=${PUFFGRES_UPLOAD_BATCH_SIZE}\n\
+PUFFGRES_MAX_RETRIES=${PUFFGRES_MAX_RETRIES}\n\
+EOF\n\
+puffgres run'
