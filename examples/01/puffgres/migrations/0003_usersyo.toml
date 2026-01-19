@@ -1,0 +1,24 @@
+# Migration for usersyo table
+version = 3
+mapping_name = "usersyo_public"
+namespace = "usersyo"
+
+[source]
+schema = "public"
+table = "users"
+
+[id]
+column = "id"
+type = "uint"
+
+# Optional: filter which rows to sync
+# [membership]
+# mode = "dsl"
+# predicate = "status = 'active'"
+
+[versioning]
+mode = "source_lsn"
+
+[transform]
+type = "js"
+path = "./puffgres/transforms/usersyo.ts"

@@ -4,19 +4,27 @@
 
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use puffgres_core::{
     extract_id, Action, BatchConfig, Batcher, DocumentId, IdentityTransformer, JsTransformer,
     Mapping, TransformType, Transformer, Value, WriteRequest,
 };
-use puffgres_pg::{BackfillConfig, BackfillScanner, PostgresStateStore};
+use puffgres_pg::{BackfillConfig, BackfillScanProgress, BackfillScanner, PostgresStateStore};
 
 use crate::config::ProjectConfig;
 use crate::env::{get_max_retries, get_transform_batch_size, get_upload_batch_size};
+
+/// Shared state for the progress spinner.
+struct SpinnerState {
+    progress: Option<BackfillScanProgress>,
+    done: bool,
+}
 
 /// Wrapper for different transformer types.
 enum MappingTransformer {
@@ -128,7 +136,36 @@ pub async fn run_backfill(
 
     // Progress tracking
     let mut upserted_rows: i64 = 0;
-    let mut spinner_frame: usize = 0;
+
+    // Shared state for spinner
+    let spinner_state = Arc::new(Mutex::new(SpinnerState {
+        progress: None,
+        done: false,
+    }));
+
+    // Spawn background spinner task
+    let (spinner_stop_tx, spinner_stop_rx) = oneshot::channel::<()>();
+    let spinner_state_clone = Arc::clone(&spinner_state);
+    let spinner_handle = tokio::spawn(async move {
+        let mut spinner_frame: usize = 0;
+        let mut stop_rx = spinner_stop_rx;
+        loop {
+            tokio::select! {
+                _ = &mut stop_rx => break,
+                _ = tokio::time::sleep(Duration::from_millis(80)) => {
+                    let state = spinner_state_clone.lock().unwrap();
+                    if state.done {
+                        break;
+                    }
+                    if let Some(ref progress) = state.progress {
+                        print!("\r{}", progress.format(spinner_frame));
+                        io::stdout().flush().ok();
+                        spinner_frame = spinner_frame.wrapping_add(1);
+                    }
+                }
+            }
+        }
+    });
 
     // Batch size for sending to JS transform (500 rows at a time)
     const JS_TRANSFORM_BATCH_SIZE: usize = 500;
@@ -209,10 +246,11 @@ pub async fn run_backfill(
             )
             .await?;
 
-        // Print progress after every batch
-        print!("\r{}", progress.format(spinner_frame));
-        io::stdout().flush().ok();
-        spinner_frame = spinner_frame.wrapping_add(1);
+        // Update shared progress state (spinner task handles display)
+        {
+            let mut state = spinner_state.lock().unwrap();
+            state.progress = Some(progress);
+        }
     }
 
     // Final flush
@@ -221,6 +259,14 @@ pub async fn run_backfill(
         upserted_rows +=
             flush_batch(&tp_client, &request, upload_batch_size, max_retries).await? as i64;
     }
+
+    // Stop the spinner task
+    {
+        let mut state = spinner_state.lock().unwrap();
+        state.done = true;
+    }
+    let _ = spinner_stop_tx.send(());
+    let _ = spinner_handle.await;
 
     // Mark as complete
     let final_progress = scanner.progress(upserted_rows);
@@ -235,7 +281,7 @@ pub async fn run_backfill(
         .await?;
 
     // Print final status with checkmark
-    println!("\r✓ {}", final_progress.format(spinner_frame));
+    println!("\r✓ {}", final_progress.format(0));
     println!("\nBackfill complete!");
 
     Ok(())
