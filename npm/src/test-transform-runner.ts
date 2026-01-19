@@ -39,7 +39,7 @@ function loadEnvFromParents(): void {
 loadEnvFromParents();
 import { faker } from '@faker-js/faker';
 import { parse as parseToml } from 'toml';
-import type { RowEvent, Action, TransformContext, DocumentId } from '../types/index.js';
+import type { RowEvent, Action, TransformContext, DocumentId, TransformInput } from '../types/index.js';
 import { createTransformContext, type ContextConfig } from './context.js';
 
 interface ColumnSchema {
@@ -400,7 +400,9 @@ async function main(): Promise<void> {
       env: process.env as Record<string, string>,
     };
     const ctx = createTransformContext(contextConfig);
-    const result: Action = await transform(event, id, ctx);
+    const rows: TransformInput[] = [{ event, id }];
+    const results: Action[] = await transform(rows, ctx);
+    const result = results[0];
 
     console.log(JSON.stringify({ fakeRow, result }));
     return;
@@ -511,7 +513,9 @@ async function main(): Promise<void> {
             env: process.env as Record<string, string>,
           };
           const ctx = createTransformContext(contextConfig);
-          result = await transform(event, id, ctx);
+          const rows: TransformInput[] = [{ event, id }];
+          const results: Action[] = await transform(rows, ctx);
+          result = results[0];
         }
       }
     }

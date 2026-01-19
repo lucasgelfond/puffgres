@@ -3,7 +3,8 @@
 //! Executes transforms by calling out to Node.js.
 
 use std::collections::HashMap;
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use crate::action::{Action, DocumentId};
 use crate::error::{Error, Result};
@@ -32,39 +33,68 @@ impl JsTransformer {
         self
     }
 
-    /// Transform a row event by calling the JS transform.
-    pub fn transform(&self, event: &RowEvent, id: DocumentId) -> Result<Action> {
-        // Serialize the event to JSON
-        let event_json = serde_json::json!({
-            "op": match event.op {
-                Operation::Insert => "insert",
-                Operation::Update => "update",
-                Operation::Delete => "delete",
-            },
-            "schema": event.schema,
-            "table": event.table,
-            "new": event.new.as_ref().map(|m| value_map_to_json(m)),
-            "old": event.old.as_ref().map(|m| value_map_to_json(m)),
-            "lsn": event.lsn,
-        });
+    /// Transform a batch of row events by calling the JS transform.
+    /// Takes a slice of (event, id) pairs and returns a Vec of Actions.
+    pub fn transform_batch(&self, rows: &[(&RowEvent, DocumentId)]) -> Result<Vec<Action>> {
+        if rows.is_empty() {
+            return Ok(vec![]);
+        }
 
-        let id_json = match &id {
-            DocumentId::Uint(u) => serde_json::json!(u),
-            DocumentId::Int(i) => serde_json::json!(i),
-            DocumentId::Uuid(s) | DocumentId::String(s) => serde_json::json!(s),
-        };
+        // Serialize the rows array to JSON
+        let rows_json: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(event, id)| {
+                let event_json = serde_json::json!({
+                    "op": match event.op {
+                        Operation::Insert => "insert",
+                        Operation::Update => "update",
+                        Operation::Delete => "delete",
+                    },
+                    "schema": event.schema,
+                    "table": event.table,
+                    "new": event.new.as_ref().map(|m| value_map_to_json(m)),
+                    "old": event.old.as_ref().map(|m| value_map_to_json(m)),
+                    "lsn": event.lsn,
+                });
+
+                let id_json = match id {
+                    DocumentId::Uint(u) => serde_json::json!(u),
+                    DocumentId::Int(i) => serde_json::json!(i),
+                    DocumentId::Uuid(s) | DocumentId::String(s) => serde_json::json!(s),
+                };
+
+                serde_json::json!({
+                    "event": event_json,
+                    "id": id_json,
+                })
+            })
+            .collect();
 
         // Build the runner command
-        // The puffgres-transform bin script has #!/usr/bin/env tsx shebang
         let runner_script = self.runner_path.as_deref().unwrap_or("puffgres-transform");
+        let rows_json_str = serde_json::to_string(&rows_json).unwrap();
 
-        let output = Command::new("npx")
+        // Spawn the process with stdin piped to avoid "Argument list too long" errors
+        let mut child = Command::new("npx")
             .arg(runner_script)
             .arg(&self.transform_path)
-            .arg(event_json.to_string())
-            .arg(id_json.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .envs(std::env::vars())
-            .output()
+            .spawn()
+            .map_err(|e| Error::TransformError(format!("Failed to spawn transform: {}", e)))?;
+
+        // Write JSON to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(rows_json_str.as_bytes())
+                .map_err(|e| Error::TransformError(format!("Failed to write to transform stdin: {}", e)))?;
+        }
+
+        // Wait for the process to complete
+        let output = child
+            .wait_with_output()
             .map_err(|e| Error::TransformError(format!("Failed to run transform: {}", e)))?;
 
         if !output.status.success() {
@@ -75,14 +105,34 @@ impl JsTransformer {
             )));
         }
 
-        // Parse the result
+        // Parse the result array
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let result: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| {
+        let results: Vec<serde_json::Value> = serde_json::from_str(&stdout).map_err(|e| {
             Error::TransformError(format!("Failed to parse transform result: {}", e))
         })?;
 
-        // Convert the result to an Action
-        parse_action(&result, id)
+        if results.len() != rows.len() {
+            return Err(Error::TransformError(format!(
+                "Transform returned {} results, expected {}",
+                results.len(),
+                rows.len()
+            )));
+        }
+
+        // Convert each result to an Action
+        results
+            .iter()
+            .zip(rows.iter())
+            .map(|(result, (_, id))| parse_action(result, id.clone()))
+            .collect()
+    }
+
+    /// Transform a single row event (convenience wrapper).
+    pub fn transform(&self, event: &RowEvent, id: DocumentId) -> Result<Action> {
+        let results = self.transform_batch(&[(event, id.clone())])?;
+        results.into_iter().next().ok_or_else(|| {
+            Error::TransformError("Transform returned empty result".into())
+        })
     }
 }
 

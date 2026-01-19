@@ -25,14 +25,13 @@ enum MappingTransformer {
 }
 
 impl MappingTransformer {
-    fn transform(
+    fn transform_batch(
         &self,
-        event: &puffgres_core::RowEvent,
-        id: DocumentId,
-    ) -> puffgres_core::Result<Action> {
+        rows: &[(&puffgres_core::RowEvent, DocumentId)],
+    ) -> puffgres_core::Result<Vec<Action>> {
         match self {
-            MappingTransformer::Identity(t) => t.transform(event, id),
-            MappingTransformer::Js(t) => t.transform(event, id),
+            MappingTransformer::Identity(t) => t.transform_batch(rows),
+            MappingTransformer::Js(t) => t.transform_batch(rows),
         }
     }
 }
@@ -131,6 +130,9 @@ pub async fn run_backfill(
     let mut last_progress_update = Instant::now();
     let progress_interval = Duration::from_secs(1);
 
+    // Batch size for sending to JS transform (500 rows at a time)
+    const JS_TRANSFORM_BATCH_SIZE: usize = 500;
+
     // Main backfill loop
     loop {
         let events = scanner.next_batch().await?;
@@ -140,7 +142,9 @@ pub async fn run_backfill(
             break;
         }
 
-        // Process events through transform pipeline
+        // Collect events with their IDs for batch processing
+        let mut transform_input: Vec<(&puffgres_core::RowEvent, DocumentId)> = Vec::new();
+
         for event in &events {
             let id = match extract_id(event, &mapping.id.column, mapping.id.id_type) {
                 Ok(id) => id,
@@ -154,27 +158,36 @@ pub async fn run_backfill(
                 }
             };
 
-            let action = match transformer.transform(event, id) {
-                Ok(action) => action,
-                Err(e) => {
-                    warn!(
-                        mapping = %mapping.name,
-                        error = %e,
-                        "Transform failed during backfill"
-                    );
-                    continue;
-                }
-            };
+            transform_input.push((event, id));
 
-            if !action.requires_write() {
-                continue;
+            // When we have enough rows, process a batch
+            if transform_input.len() >= JS_TRANSFORM_BATCH_SIZE {
+                process_transform_batch(
+                    &transformer,
+                    &transform_input,
+                    &mapping,
+                    &mut batcher,
+                    &tp_client,
+                    upload_batch_size,
+                    max_retries,
+                )
+                .await?;
+                transform_input.clear();
             }
+        }
 
-            // Add to batcher
-            if let Some(batch) = batcher.add(&mapping.namespace, action, 0) {
-                let request = WriteRequest::from_batch(batch);
-                flush_batch(&tp_client, &request, upload_batch_size, max_retries).await?;
-            }
+        // Process any remaining rows
+        if !transform_input.is_empty() {
+            process_transform_batch(
+                &transformer,
+                &transform_input,
+                &mapping,
+                &mut batcher,
+                &tp_client,
+                upload_batch_size,
+                max_retries,
+            )
+            .await?;
         }
 
         // Flush any remaining items in the batcher
@@ -228,7 +241,55 @@ pub async fn run_backfill(
     Ok(())
 }
 
-/// Flush a batch to turbopuffer with upload batching and retry logic.
+/// Process a batch of rows through the transform.
+async fn process_transform_batch(
+    transformer: &MappingTransformer,
+    rows: &[(&puffgres_core::RowEvent, DocumentId)],
+    mapping: &Mapping,
+    batcher: &mut Batcher,
+    tp_client: &rs_puff::Client,
+    upload_batch_size: usize,
+    max_retries: u32,
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    debug!(
+        mapping = %mapping.name,
+        batch_size = rows.len(),
+        "Processing transform batch"
+    );
+
+    let actions = match transformer.transform_batch(rows) {
+        Ok(actions) => actions,
+        Err(e) => {
+            warn!(
+                mapping = %mapping.name,
+                error = %e,
+                batch_size = rows.len(),
+                "Transform batch failed during backfill"
+            );
+            return Ok(());
+        }
+    };
+
+    for action in actions {
+        if !action.requires_write() {
+            continue;
+        }
+
+        // Add to batcher
+        if let Some(batch) = batcher.add(&mapping.namespace, action, 0) {
+            let request = WriteRequest::from_batch(batch);
+            flush_batch(tp_client, &request, upload_batch_size, max_retries).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Flush a batch to turbopuffer with chunking and retry logic.
 async fn flush_batch(
     client: &rs_puff::Client,
     request: &WriteRequest,
@@ -261,7 +322,7 @@ async fn flush_batch(
         })
         .collect();
 
-    // Upload in batches with retry logic
+    // Upload in chunks (backfill is upserts-only, no deletes)
     for chunk in all_upsert_rows.chunks(upload_batch_size) {
         let params = rs_puff::WriteParams {
             upsert_rows: Some(chunk.to_vec()),
@@ -269,7 +330,6 @@ async fn flush_batch(
             distance_metric: request.distance_metric,
             ..Default::default()
         };
-
         write_with_retry(client, &request.namespace, params, max_retries).await?;
     }
 

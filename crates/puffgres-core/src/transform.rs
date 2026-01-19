@@ -4,8 +4,17 @@ use crate::types::{Operation, RowEvent, Value};
 
 /// Trait for transforming row events into turbopuffer actions.
 pub trait Transformer: Send + Sync {
-    /// Transform a row event into an action.
-    fn transform(&self, event: &RowEvent, id: DocumentId) -> Result<Action>;
+    /// Transform a batch of row events into actions.
+    /// Takes a slice of (event, id) pairs and returns a Vec of Actions.
+    fn transform_batch(&self, rows: &[(&RowEvent, DocumentId)]) -> Result<Vec<Action>>;
+
+    /// Transform a single row event (convenience wrapper).
+    fn transform(&self, event: &RowEvent, id: DocumentId) -> Result<Action> {
+        let results = self.transform_batch(&[(event, id)])?;
+        results.into_iter().next().ok_or_else(|| {
+            Error::TransformError("Transform returned empty result".into())
+        })
+    }
 }
 
 /// Identity transformer that maps selected columns directly to the document.
@@ -26,7 +35,15 @@ impl IdentityTransformer {
 }
 
 impl Transformer for IdentityTransformer {
-    fn transform(&self, event: &RowEvent, id: DocumentId) -> Result<Action> {
+    fn transform_batch(&self, rows: &[(&RowEvent, DocumentId)]) -> Result<Vec<Action>> {
+        rows.iter()
+            .map(|(event, id)| self.transform_single(event, id.clone()))
+            .collect()
+    }
+}
+
+impl IdentityTransformer {
+    fn transform_single(&self, event: &RowEvent, id: DocumentId) -> Result<Action> {
         match event.op {
             Operation::Delete => Ok(Action::delete(id)),
             Operation::Insert | Operation::Update => {
@@ -72,8 +89,10 @@ impl<F> Transformer for FnTransformer<F>
 where
     F: Fn(&RowEvent, DocumentId) -> Result<Action> + Send + Sync,
 {
-    fn transform(&self, event: &RowEvent, id: DocumentId) -> Result<Action> {
-        (self.func)(event, id)
+    fn transform_batch(&self, rows: &[(&RowEvent, DocumentId)]) -> Result<Vec<Action>> {
+        rows.iter()
+            .map(|(event, id)| (self.func)(event, id.clone()))
+            .collect()
     }
 }
 

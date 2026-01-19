@@ -5,7 +5,7 @@
  */
 
 import { resolve, extname } from 'path';
-import type { TransformFn, RowEvent, Action, TransformContext, DocumentId } from '../types/index.js';
+import type { TransformFn, RowEvent, Action, TransformContext, DocumentId, TransformInput } from '../types/index.js';
 
 /**
  * Loaded transform module.
@@ -86,43 +86,54 @@ async function loadJavaScriptTransform(path: string): Promise<LoadedTransform> {
 
 /**
  * Execute a transform function with error handling.
+ * Takes an array of rows and returns an array of actions.
  */
 export async function executeTransform(
   transform: TransformFn,
-  event: RowEvent,
-  id: DocumentId,
+  rows: TransformInput[],
   ctx: TransformContext
-): Promise<Action> {
+): Promise<Action[]> {
   try {
-    const result = await transform(event, id, ctx);
+    const results = await transform(rows, ctx);
 
-    // Validate the result
-    if (!result || typeof result !== 'object') {
-      throw new Error('Transform must return an Action object');
+    // Validate each result
+    if (!Array.isArray(results)) {
+      throw new Error('Transform must return an array of Action objects');
     }
 
-    if (!('type' in result)) {
-      throw new Error('Transform result must have a "type" property');
+    if (results.length !== rows.length) {
+      throw new Error(`Transform must return exactly ${rows.length} actions, got ${results.length}`);
     }
 
     const validTypes = ['upsert', 'delete', 'skip'];
-    if (!validTypes.includes(result.type)) {
-      throw new Error(`Invalid action type: ${result.type}`);
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+
+      if (!result || typeof result !== 'object') {
+        throw new Error(`Transform result at index ${i} must be an Action object`);
+      }
+
+      if (!('type' in result)) {
+        throw new Error(`Transform result at index ${i} must have a "type" property`);
+      }
+
+      if (!validTypes.includes(result.type)) {
+        throw new Error(`Invalid action type at index ${i}: ${result.type}`);
+      }
+
+      if (result.type === 'upsert' && !('id' in result && 'doc' in result)) {
+        throw new Error(`Upsert action at index ${i} must have "id" and "doc" properties`);
+      }
+
+      if (result.type === 'delete' && !('id' in result)) {
+        throw new Error(`Delete action at index ${i} must have "id" property`);
+      }
     }
 
-    if (result.type === 'upsert' && !('id' in result && 'doc' in result)) {
-      throw new Error('Upsert action must have "id" and "doc" properties');
-    }
-
-    if (result.type === 'delete' && !('id' in result)) {
-      throw new Error('Delete action must have "id" property');
-    }
-
-    return result;
+    return results;
   } catch (error) {
-    // Return an error action that can be sent to DLQ
-    return {
-      type: 'skip',
-    };
+    // Return skip actions for all rows on error
+    return rows.map(() => ({ type: 'skip' as const }));
   }
 }

@@ -82,13 +82,23 @@ export interface TransformContext {
 }
 
 /**
+ * Input row for batch transforms.
+ */
+export interface TransformInput {
+  /** Row event from CDC stream */
+  event: RowEvent;
+  /** Document ID extracted from the row */
+  id: DocumentId;
+}
+
+/**
  * Transform function signature.
+ * Receives an array of rows and returns an array of actions (one per row).
  */
 export type TransformFn = (
-  event: RowEvent,
-  id: DocumentId,
+  rows: TransformInput[],
   ctx: TransformContext
-) => Promise<Action> | Action;
+) => Promise<Action[]> | Action[];
 
 /**
  * Puffgres configuration from puffgres.toml

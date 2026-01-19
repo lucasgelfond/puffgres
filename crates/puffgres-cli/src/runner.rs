@@ -20,15 +20,26 @@ enum MappingTransformer {
 }
 
 impl MappingTransformer {
+    fn transform_batch(
+        &self,
+        rows: &[(&puffgres_core::RowEvent, DocumentId)],
+    ) -> puffgres_core::Result<Vec<Action>> {
+        match self {
+            MappingTransformer::Identity(t) => t.transform_batch(rows),
+            MappingTransformer::Js(t) => t.transform_batch(rows),
+        }
+    }
+
+    /// Transform a single event (convenience wrapper for CDC loop).
     fn transform(
         &self,
         event: &puffgres_core::RowEvent,
         id: DocumentId,
     ) -> puffgres_core::Result<Action> {
-        match self {
-            MappingTransformer::Identity(t) => t.transform(event, id),
-            MappingTransformer::Js(t) => t.transform(event, id),
-        }
+        let results = self.transform_batch(&[(event, id)])?;
+        results.into_iter().next().ok_or_else(|| {
+            puffgres_core::Error::TransformError("Transform returned empty result".into())
+        })
     }
 }
 
@@ -278,28 +289,36 @@ async fn flush_batch(
     let all_deletes: Vec<serde_json::Value> =
         request.deletes.iter().map(convert_doc_id_to_json).collect();
 
-    // Upload upserts in batches
-    for chunk in all_upsert_rows.chunks(upload_batch_size) {
-        let params = rs_puff::WriteParams {
-            upsert_rows: Some(chunk.to_vec()),
-            deletes: None,
-            distance_metric: request.distance_metric,
-            ..Default::default()
-        };
+    // Upload in chunks, combining upserts and deletes in each call
+    // First chunk includes all deletes (they're small - just IDs)
+    let mut upsert_chunks = all_upsert_rows.chunks(upload_batch_size).peekable();
+    let mut deletes_sent = false;
 
-        write_with_retry(client, &request.namespace, params, max_retries).await?;
-    }
-
-    // Upload deletes in batches
-    for chunk in all_deletes.chunks(upload_batch_size) {
+    // Handle case with only deletes (no upserts)
+    if all_upsert_rows.is_empty() && !all_deletes.is_empty() {
         let params = rs_puff::WriteParams {
             upsert_rows: None,
-            deletes: Some(chunk.to_vec()),
+            deletes: Some(all_deletes),
             distance_metric: request.distance_metric,
             ..Default::default()
         };
-
         write_with_retry(client, &request.namespace, params, max_retries).await?;
+    } else {
+        // Send upserts in chunks, include deletes with first chunk
+        while let Some(chunk) = upsert_chunks.next() {
+            let params = rs_puff::WriteParams {
+                upsert_rows: Some(chunk.to_vec()),
+                deletes: if !deletes_sent && !all_deletes.is_empty() {
+                    deletes_sent = true;
+                    Some(all_deletes.clone())
+                } else {
+                    None
+                },
+                distance_metric: request.distance_metric,
+                ..Default::default()
+            };
+            write_with_retry(client, &request.namespace, params, max_retries).await?;
+        }
     }
 
     // Update checkpoint

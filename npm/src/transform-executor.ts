@@ -5,30 +5,46 @@
  * Called by the Rust JsTransformer to execute TypeScript/JavaScript transforms.
  *
  * Usage:
- *   npx tsx transform-executor.ts <transform-path> <event-json> <id-json> [migration-json]
+ *   npx tsx transform-executor.ts <transform-path> [migration-json]
+ *
+ * Rows JSON is read from stdin to avoid "Argument list too long" errors.
  *
  * Output:
- *   Writes the Action result to stdout as JSON.
+ *   Writes an array of Action results to stdout as JSON.
  */
 
 import { resolve } from 'path';
-import type { RowEvent, Action, TransformContext, DocumentId, MigrationInfo } from '../types/index.js';
+import type { RowEvent, Action, TransformContext, DocumentId, MigrationInfo, TransformInput } from '../types/index.js';
 import { createTransformContext, type ContextConfig } from './context.js';
+
+/**
+ * Read all data from stdin.
+ */
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
-  if (args.length < 3) {
-    console.error('Usage: transform-executor <transform-path> <event-json> <id-json> [migration-json]');
+  if (args.length < 1) {
+    console.error('Usage: transform-executor <transform-path> [migration-json]');
+    console.error('Rows JSON is read from stdin.');
     process.exit(1);
   }
 
-  const [transformPath, eventJson, idJson, migrationJson] = args;
+  const [transformPath, migrationJson] = args;
+
+  // Read rows JSON from stdin
+  const rowsJson = await readStdin();
 
   try {
-    // Parse inputs
-    const event: RowEvent = JSON.parse(eventJson);
-    const id: DocumentId = JSON.parse(idJson);
+    // Parse inputs - rows is an array of {event, id} objects
+    const rows: TransformInput[] = JSON.parse(rowsJson);
     const migration: MigrationInfo = migrationJson
       ? JSON.parse(migrationJson)
       : { name: 'unknown', namespace: 'default', table: 'unknown' };
@@ -48,11 +64,11 @@ async function main(): Promise<void> {
       migration,
     });
 
-    // Execute the transform
-    const result: Action = await transform(event, id, ctx);
+    // Execute the transform with the batch of rows
+    const results: Action[] = await transform(rows, ctx);
 
-    // Output the result
-    console.log(JSON.stringify(result));
+    // Output the results
+    console.log(JSON.stringify(results));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Transform error: ${message}`);
