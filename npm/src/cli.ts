@@ -40,17 +40,10 @@ connection_string = "\${DATABASE_URL}"
 
 [turbopuffer]
 api_key = "\${TURBOPUFFER_API_KEY}"
-
-# Optional: Embedding provider for transforms
-# [providers.embeddings]
-# type = "together"
-# model = "BAAI/bge-base-en-v1.5"
-# api_key = "\${TOGETHER_API_KEY}"
 `,
   '.env.example': `# Copy this to .env and fill in your values
 DATABASE_URL=postgres://user:password@localhost:5432/mydb
 TURBOPUFFER_API_KEY=your-turbopuffer-api-key
-TOGETHER_API_KEY=your-together-api-key
 `,
   '.gitignore': `.env
 node_modules/
@@ -74,14 +67,15 @@ type = "uuid"
 # mode = "dsl"
 # predicate = "status = 'active'"
 
-# Optional: Custom transform for embeddings
+# Optional: Custom transform
 # [transform]
 # path = "./transforms/users.ts"
 `,
   'transforms/example.ts': `/**
- * Example transform with embedding support.
+ * Example transform.
  *
  * Rename this file and update migrations/0001_example.toml to use it.
+ * You can import any npm packages here - just add them to package.json.
  */
 import type { RowEvent, Action, TransformContext } from 'puffgres';
 
@@ -90,17 +84,11 @@ export default async function transform(
   id: string,
   ctx: TransformContext
 ): Promise<Action> {
-  // Handle deletes
   if (event.op === 'delete') {
     return { type: 'delete', id };
   }
 
   const row = event.new!;
-
-  // Example: Generate embedding from text fields
-  // Uncomment and configure embedding provider in puffgres.toml
-  // const textToEmbed = [row.name, row.bio].filter(Boolean).join('\\n\\n');
-  // const embedding = await ctx.embed(textToEmbed);
 
   return {
     type: 'upsert',
@@ -109,7 +97,6 @@ export default async function transform(
       name: row.name,
       email: row.email,
       bio: row.bio,
-      // embedding,
     },
   };
 }

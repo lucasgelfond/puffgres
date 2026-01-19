@@ -43,21 +43,10 @@ async function main(): Promise<void> {
     }
 
     // Create context from environment
-    const contextConfig: ContextConfig = {
+    const ctx = createTransformContext({
       env: process.env as Record<string, string>,
       migration,
-    };
-
-    // Add embedding provider if configured
-    if (process.env.EMBEDDING_PROVIDER) {
-      contextConfig.embeddings = {
-        type: process.env.EMBEDDING_PROVIDER as 'together' | 'openai',
-        model: process.env.EMBEDDING_MODEL || 'BAAI/bge-base-en-v1.5',
-        apiKey: process.env.EMBEDDING_API_KEY || '',
-      };
-    }
-
-    const ctx = createTransformContext(contextConfig);
+    });
 
     // Execute the transform
     const result: Action = await transform(event, id, ctx);

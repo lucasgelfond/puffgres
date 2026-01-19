@@ -60,13 +60,6 @@ export interface TransformContext {
   env: Record<string, string>;
 
   /**
-   * Generate embedding for text using configured provider.
-   * @param text Text to embed
-   * @returns Vector embedding as array of numbers
-   */
-  embed(text: string): Promise<number[]>;
-
-  /**
    * HTTP client for custom API calls.
    * @param url URL to fetch
    * @param options Fetch options
@@ -101,13 +94,6 @@ export interface PuffgresConfig {
   };
   turbopuffer: {
     api_key: string;
-  };
-  providers?: {
-    embeddings?: {
-      type: 'together' | 'openai';
-      model: string;
-      api_key: string;
-    };
   };
 }
 

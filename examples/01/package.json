@@ -2,6 +2,11 @@
   "name": "@puffgres/example-01",
   "private": true,
   "type": "module",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp"
+    ]
+  },
   "scripts": {
     "start": "puffgres run",
     "migrate": "puffgres migrate",
@@ -10,6 +15,7 @@
     "test-transform-runner": "puffgres-test-transform"
   },
   "dependencies": {
+    "js-tiktoken": "^1.0.21",
     "puffgres": "link:../../npm"
   }
 }
