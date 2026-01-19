@@ -490,10 +490,22 @@ mode = "source_lsn"
     }
 
     #[test]
+    #[serial]
     fn test_validate_no_unreferenced_transforms_no_dir() {
         // Should succeed when transforms dir doesn't exist
+        let temp_dir = TempDir::new().unwrap();
+
+        // Change to temp directory (which has no puffgres/transforms)
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
         let migrations = vec![create_test_migration("users", "users", None)];
-        assert!(validate_no_unreferenced_transforms(&migrations).is_ok());
+        let result = validate_no_unreferenced_transforms(&migrations);
+
+        // Restore original directory
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert!(result.is_ok());
     }
 
     // Note: Tests that change the current working directory must run serially
