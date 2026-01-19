@@ -2,7 +2,7 @@
 # Builds puffgres from source
 
 # Builder stage - compile Rust binary
-FROM rust:1.83-slim AS builder
+FROM rust:latest AS builder
 
 RUN apt-get update && apt-get install -y git pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
