@@ -14,7 +14,7 @@ This will take you through an interactive setup. Puffgres largely should be able
 
 [pgvector is not very good at scale](https://alex-jacobs.com/posts/the-case-against-pgvector/) and there’s considerable performance hits to keeping large vectors on a main database instance. [Turbopuffer](https://youtu.be/_yb6Nw21QxA?t=597) is excellent, fast, and easy to use. 
 
-I found myself, in several projects, mirroring data from Postgres to Turbopuffer for search. Every time I wrote clunky, bespoke logic. Usually this meant some sort of tracking row or separate table (`updated_in_turbopuffer_at`) and, effectively, polling logic to see if a row had changed on each run of a data pipeline. I kept rewriting the same batching / retry logic and figured, in the [primacy of toolmaking](https://www.youtube.com/watch?v=_GpBkplsGus) tradition, that I should build a more generic tool.
+I found myself, in several projects, mirroring data from Postgres to Turbopuffer for search. Every time I wrote clunky, bespoke logic. Usually this meant some sort of tracking row or separate table (`updated_in_turbopuffer_at`), effectively, polling to see if a row had changed on each run of a data pipeline. Obviously this is much less efficient than something event-based, and I kept rewriting the same annoying-to-maintain and brittle batching/retry logic. In the [primacy of toolmaking](https://www.youtube.com/watch?v=_GpBkplsGus) tradition, that I should build something more generic for myself for this purpose, that might also solve others' similar problems.
 
 ## Fundamentals
 

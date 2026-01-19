@@ -1,7 +1,7 @@
-# Migration for newvector table
-version = 3
-mapping_name = "newvector_public"
-namespace = "newvector"
+# Migration for vectortest table
+version = 1
+mapping_name = "vectortest_public"
+namespace = "vectortest"
 
 [source]
 schema = "public"
@@ -21,4 +21,4 @@ mode = "source_lsn"
 
 [transform]
 type = "js"
-path = "./transforms/newvector.ts"
+path = "./puffgres/transforms/vectortest.ts"

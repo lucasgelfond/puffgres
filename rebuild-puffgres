@@ -7,11 +7,6 @@ echo "Building puffgres..."
 cargo build --release -p puffgres-cli
 
 echo ""
-echo "Done! Binary at: target/release/puffgres"
-
-# Optionally install to cargo bin
-if [[ "$1" == "--install" ]]; then
-    echo "Installing to ~/.cargo/bin..."
-    cargo install --path crates/puffgres-cli --force
-    echo "Installed! Run 'puffgres' from anywhere."
-fi
+echo "Installing to ~/.cargo/bin..."
+cargo install --path crates/puffgres-cli --force
+echo "Done! Run 'puffgres' from anywhere."

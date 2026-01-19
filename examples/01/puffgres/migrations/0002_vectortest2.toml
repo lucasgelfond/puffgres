@@ -1,7 +1,7 @@
-# Migration for uservectortransform table
+# Migration for vectortest2 table
 version = 2
-mapping_name = "uservectortransform_public"
-namespace = "uservectortransform"
+mapping_name = "vectortest2_public"
+namespace = "vectortest2"
 
 [source]
 schema = "public"
@@ -20,4 +20,5 @@ type = "uint"
 mode = "source_lsn"
 
 [transform]
-path = "./transforms/uservectortransform.ts"
+type = "js"
+path = "./puffgres/transforms/vectortest2.ts"

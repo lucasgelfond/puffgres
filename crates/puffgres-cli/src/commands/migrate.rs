@@ -8,7 +8,8 @@ use tracing::info;
 
 use crate::config::ProjectConfig;
 use crate::validation::{
-    store_transform, validate_no_unreferenced_transforms, validate_transforms,
+    store_transform, validate_no_console_log_in_transforms, validate_no_unreferenced_transforms,
+    validate_transforms,
 };
 
 pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
@@ -28,6 +29,12 @@ pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
 
     // Check for unreferenced transforms in the transforms directory
     if let Err(e) = validate_no_unreferenced_transforms(&local) {
+        eprintln!("{}", format!("Error: {}", e).red());
+        std::process::exit(1);
+    }
+
+    // Check for console.log in transforms (breaks stdout protocol)
+    if let Err(e) = validate_no_console_log_in_transforms() {
         eprintln!("{}", format!("Error: {}", e).red());
         std::process::exit(1);
     }

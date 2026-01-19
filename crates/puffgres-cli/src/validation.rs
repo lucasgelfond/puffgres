@@ -61,6 +61,8 @@ pub async fn validate_all_tables_exist(
 }
 
 /// Get all transform paths referenced by migrations.
+/// This includes both explicit paths from [transform].path and implicit paths
+/// based on mapping_name (which is how transforms are looked up at runtime).
 pub fn get_referenced_transforms(migrations: &[LocalMigration]) -> Result<HashSet<String>> {
     let mut referenced = HashSet::new();
 
@@ -72,11 +74,22 @@ pub fn get_referenced_transforms(migrations: &[LocalMigration]) -> Result<HashSe
             )
         })?;
 
+        // Add explicit path if specified
         if let Some(path) = &config.transform.path {
-            // Normalize the path
-            let normalized = path.trim_start_matches("./");
-            referenced.insert(normalized.to_string());
+            // Extract just the filename and construct consistent path format
+            // that matches what validate_no_unreferenced_transforms() expects
+            let path_obj = Path::new(path);
+            if let Some(filename) = path_obj.file_name() {
+                referenced.insert(format!("transforms/{}", filename.to_string_lossy()));
+            }
         }
+
+        // Also add implicit paths based on mapping_name
+        // These are the patterns used by validate_transforms() and runtime lookup
+        referenced.insert(format!("transforms/{}.ts", config.mapping_name));
+        referenced.insert(format!("transforms/{}_{}.ts", config.mapping_name, config.version));
+        referenced.insert(format!("transforms/{}.js", config.mapping_name));
+        referenced.insert(format!("transforms/{}_{}.js", config.mapping_name, config.version));
     }
 
     Ok(referenced)
@@ -127,6 +140,49 @@ pub fn validate_no_unreferenced_transforms(migrations: &[LocalMigration]) -> Res
              - Reference them in a migration by adding [transform] section with path\n\
              - Remove them if they are no longer needed",
             unreferenced.join("\n  ")
+        );
+    }
+
+    Ok(())
+}
+
+/// Validate that transform files don't contain console.log calls.
+///
+/// console.log writes to stdout which breaks the transform protocol.
+/// Users should use console.error for debugging instead.
+pub fn validate_no_console_log_in_transforms() -> Result<()> {
+    let transforms_dir = Path::new("puffgres/transforms");
+    if !transforms_dir.exists() {
+        return Ok(());
+    }
+
+    let mut files_with_console_log = Vec::new();
+
+    for entry in fs::read_dir(transforms_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Only check .ts and .js files
+        let is_transform = path
+            .extension()
+            .map_or(false, |ext| ext == "ts" || ext == "js");
+
+        if !is_transform {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path)?;
+        if content.contains("console.log") {
+            files_with_console_log.push(path.display().to_string());
+        }
+    }
+
+    if !files_with_console_log.is_empty() {
+        anyhow::bail!(
+            "Found console.log in transform files:\n  {}\n\n\
+             Adding anything to stdout breaks the transform logic for now.\n\
+             Use console.error for debugging. (We will find a better solution for this in the future!)",
+            files_with_console_log.join("\n  ")
         );
     }
 
@@ -248,21 +304,27 @@ mode = "source_lsn"
     }
 
     #[test]
-    fn test_get_referenced_transforms_empty() {
+    fn test_get_referenced_transforms_includes_implicit_paths() {
+        // Even without explicit path, we should have implicit paths based on mapping_name
         let migrations = vec![create_test_migration("users", "users", None)];
         let referenced = get_referenced_transforms(&migrations).unwrap();
-        assert!(referenced.is_empty());
+        // Should include implicit paths: transforms/users.ts, transforms/users_1.ts, etc.
+        assert!(referenced.contains("transforms/users.ts"));
+        assert!(referenced.contains("transforms/users_1.ts"));
+        assert!(referenced.contains("transforms/users.js"));
+        assert!(referenced.contains("transforms/users_1.js"));
     }
 
     #[test]
-    fn test_get_referenced_transforms_with_path() {
+    fn test_get_referenced_transforms_with_explicit_path() {
         let migrations = vec![create_test_migration(
             "users",
             "users",
-            Some("./transforms/users.ts"),
+            Some("./transforms/custom_users.ts"),
         )];
         let referenced = get_referenced_transforms(&migrations).unwrap();
-        assert_eq!(referenced.len(), 1);
+        // Should include both explicit and implicit paths
+        assert!(referenced.contains("transforms/custom_users.ts"));
         assert!(referenced.contains("transforms/users.ts"));
     }
 
@@ -338,5 +400,124 @@ mode = "source_lsn"
             "Error should mention 'orphan': {}",
             err_msg
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_validate_transforms_referenced_by_mapping_name() {
+        // Test that transforms named after mapping_name are considered referenced
+        let temp_dir = TempDir::new().unwrap();
+        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        std::fs::create_dir_all(&transforms_dir).unwrap();
+
+        // Create a transform file named after the mapping_name (not explicitly in path)
+        std::fs::write(transforms_dir.join("users_public.ts"), "// transform").unwrap();
+
+        // Change to temp directory for the test
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Migration has mapping_name "users_public" but different explicit path
+        let migrations = vec![create_test_migration(
+            "users_public",
+            "users",
+            Some("./transforms/different.ts"),
+        )];
+
+        let result = validate_no_unreferenced_transforms(&migrations);
+
+        // Restore original directory
+        std::env::set_current_dir(original_dir).unwrap();
+
+        // Should pass because users_public.ts matches the mapping_name implicit path
+        assert!(result.is_ok(), "Transform matching mapping_name should be considered referenced");
+    }
+
+    #[test]
+    #[serial]
+    fn test_validate_no_console_log_passes_without_console_log() {
+        let temp_dir = TempDir::new().unwrap();
+        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        std::fs::create_dir_all(&transforms_dir).unwrap();
+
+        // Create a transform without console.log
+        std::fs::write(
+            transforms_dir.join("clean.ts"),
+            "export function transform(row) { return row; }",
+        )
+        .unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = validate_no_console_log_in_transforms();
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn test_validate_no_console_log_fails_with_console_log() {
+        let temp_dir = TempDir::new().unwrap();
+        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        std::fs::create_dir_all(&transforms_dir).unwrap();
+
+        // Create a transform with console.log
+        std::fs::write(
+            transforms_dir.join("logging.ts"),
+            "export function transform(row) { console.log(row); return row; }",
+        )
+        .unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = validate_no_console_log_in_transforms();
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("console.log"),
+            "Error should mention console.log: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("logging.ts"),
+            "Error should mention the file: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("console.error"),
+            "Error should suggest console.error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_validate_console_error_is_allowed() {
+        let temp_dir = TempDir::new().unwrap();
+        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        std::fs::create_dir_all(&transforms_dir).unwrap();
+
+        // Create a transform with console.error (should be allowed)
+        std::fs::write(
+            transforms_dir.join("debug.ts"),
+            "export function transform(row) { console.error('debug:', row); return row; }",
+        )
+        .unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = validate_no_console_log_in_transforms();
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert!(result.is_ok(), "console.error should be allowed");
     }
 }

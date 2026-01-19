@@ -24,14 +24,6 @@ pub fn warn_if_pooler_url(url: &str) {
     }
 }
 
-/// Check if all required puffgres environment variables are set.
-/// Returns true if DATABASE_URL, TURBOPUFFER_API_KEY, and PUFFGRES_BASE_NAMESPACE are all present.
-pub fn has_all_env_vars() -> bool {
-    std::env::var("DATABASE_URL").is_ok()
-        && std::env::var("TURBOPUFFER_API_KEY").is_ok()
-        && std::env::var("PUFFGRES_BASE_NAMESPACE").is_ok()
-}
-
 /// Get the transform batch size from environment or use default.
 pub fn get_transform_batch_size() -> usize {
     std::env::var("PUFFGRES_TRANSFORM_BATCH_SIZE")
@@ -234,110 +226,6 @@ mod tests {
 
         // Cleanup
         std::env::set_current_dir(original_dir).unwrap();
-    }
-
-    #[test]
-    #[serial]
-    fn test_has_all_env_vars_returns_true_when_all_set() {
-        // Clear first
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("TURBOPUFFER_API_KEY");
-        std::env::remove_var("PUFFGRES_BASE_NAMESPACE");
-
-        // Set all three
-        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
-        std::env::set_var("TURBOPUFFER_API_KEY", "test-key");
-        std::env::set_var("PUFFGRES_BASE_NAMESPACE", "test-namespace");
-
-        assert!(
-            has_all_env_vars(),
-            "Should return true when all three env vars are set"
-        );
-
-        // Cleanup
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("TURBOPUFFER_API_KEY");
-        std::env::remove_var("PUFFGRES_BASE_NAMESPACE");
-    }
-
-    #[test]
-    #[serial]
-    fn test_has_all_env_vars_returns_false_when_missing_database_url() {
-        // Clear all
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("TURBOPUFFER_API_KEY");
-        std::env::remove_var("PUFFGRES_BASE_NAMESPACE");
-
-        // Set only two
-        std::env::set_var("TURBOPUFFER_API_KEY", "test-key");
-        std::env::set_var("PUFFGRES_BASE_NAMESPACE", "test-namespace");
-
-        assert!(
-            !has_all_env_vars(),
-            "Should return false when DATABASE_URL is missing"
-        );
-
-        // Cleanup
-        std::env::remove_var("TURBOPUFFER_API_KEY");
-        std::env::remove_var("PUFFGRES_BASE_NAMESPACE");
-    }
-
-    #[test]
-    #[serial]
-    fn test_has_all_env_vars_returns_false_when_missing_turbopuffer_key() {
-        // Clear all
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("TURBOPUFFER_API_KEY");
-        std::env::remove_var("PUFFGRES_BASE_NAMESPACE");
-
-        // Set only two
-        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
-        std::env::set_var("PUFFGRES_BASE_NAMESPACE", "test-namespace");
-
-        assert!(
-            !has_all_env_vars(),
-            "Should return false when TURBOPUFFER_API_KEY is missing"
-        );
-
-        // Cleanup
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("PUFFGRES_BASE_NAMESPACE");
-    }
-
-    #[test]
-    #[serial]
-    fn test_has_all_env_vars_returns_false_when_missing_base_namespace() {
-        // Clear all
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("TURBOPUFFER_API_KEY");
-        std::env::remove_var("PUFFGRES_BASE_NAMESPACE");
-
-        // Set only two
-        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
-        std::env::set_var("TURBOPUFFER_API_KEY", "test-key");
-
-        assert!(
-            !has_all_env_vars(),
-            "Should return false when PUFFGRES_BASE_NAMESPACE is missing"
-        );
-
-        // Cleanup
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("TURBOPUFFER_API_KEY");
-    }
-
-    #[test]
-    #[serial]
-    fn test_has_all_env_vars_returns_false_when_none_set() {
-        // Clear all
-        std::env::remove_var("DATABASE_URL");
-        std::env::remove_var("TURBOPUFFER_API_KEY");
-        std::env::remove_var("PUFFGRES_BASE_NAMESPACE");
-
-        assert!(
-            !has_all_env_vars(),
-            "Should return false when no env vars are set"
-        );
     }
 
     #[test]

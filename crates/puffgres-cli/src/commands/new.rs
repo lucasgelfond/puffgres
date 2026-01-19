@@ -77,7 +77,7 @@ mode = "source_lsn"
 
 [transform]
 type = "js"
-path = "./transforms/{name}.ts"
+path = "./puffgres/transforms/{name}.ts"
 "#,
             name = safe_name,
             version = next_version

@@ -6,8 +6,6 @@ use anyhow::Result;
 use colored::Colorize;
 use tracing::info;
 
-use crate::env::has_all_env_vars;
-
 pub async fn cmd_init() -> Result<()> {
     println!("Initializing puffgres in current directory...\n");
 
@@ -19,46 +17,30 @@ pub async fn cmd_init() -> Result<()> {
     // Create or update package.json with required dependencies
     ensure_package_json()?;
 
-    // Only create .env files if not all variables are already available
-    if has_all_env_vars() {
-        println!(
-            "{}",
-            "Found DATABASE_URL, TURBOPUFFER_API_KEY, and PUFFGRES_BASE_NAMESPACE in environment (from parent .env or shell)"
-                .green()
-        );
-    } else {
-        let env_content = r#"# Puffgres environment variables
-# This file contains secrets and should not be committed to version control
-#
-# These variables can also be defined in any parent directory's .env file.
-# Puffgres searches from the current directory up to the filesystem root.
+    // Create .env.example with puffgres-specific variables
+    let env_example_content = r#"# Puffgres environment variables
+# Copy this file to .env and fill in your values
 
 # Postgres connection string (Supabase, Neon, etc.)
-DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
+DATABASE_URL=
 
 # Turbopuffer API key
-TURBOPUFFER_API_KEY=your-api-key-here
+TURBOPUFFER_API_KEY=
 
-# Optional: Together AI for embeddings
-# TOGETHER_API_KEY=your-together-key-here
-
-# Namespace prefix for environment separation (e.g., PRODUCTION, DEVELOPMENT)
+# Optional: Namespace prefix for environment separation (e.g., production, development)
 # PUFFGRES_BASE_NAMESPACE=
+
+# Optional: Batch sizes for transform and upload operations
+# PUFFGRES_TRANSFORM_BATCH_SIZE=100
+# PUFFGRES_UPLOAD_BATCH_SIZE=500
 "#;
 
-        let env_path = Path::new(".env");
-        if !env_path.exists() {
-            fs::write(env_path, env_content)?;
-            println!("Created .env (fill in your credentials)");
-        } else {
-            println!(".env already exists, skipping");
-        }
-
-        let env_example_path = Path::new(".env.example");
-        if !env_example_path.exists() {
-            fs::write(env_example_path, env_content)?;
-            println!("Created .env.example");
-        }
+    let env_example_path = Path::new(".env.example");
+    if !env_example_path.exists() {
+        fs::write(env_example_path, env_example_content)?;
+        println!("Created .env.example");
+    } else {
+        println!(".env.example already exists, skipping");
     }
 
     // Create puffgres.toml config
@@ -113,7 +95,7 @@ api_key = "${TURBOPUFFER_API_KEY}"
 
     println!("\n{}", "Puffgres initialized!".green().bold());
     println!("\nNext steps:");
-    println!("  1. Fill in your credentials in .env");
+    println!("  1. Copy .env.example to .env and fill in your credentials");
     println!("  2. Run: npm install (or pnpm install)");
     println!("  3. Run: puffgres setup");
     println!("  4. Run: puffgres new <table_name>");

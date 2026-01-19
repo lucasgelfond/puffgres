@@ -60,7 +60,8 @@ export default async function transform(
   // Tokenize and truncate to 512 tokens
   const truncatedText = truncateToTokens(combinedText, 512);
 
-  console.log('truncatedText', truncatedText);
+  // Use console.error for debug output
+  console.error('truncatedText', truncatedText);
 
   // Embed using Together AI with BAAI/bge-base-en-v1.5
   const embedding = await embedWithTogether(truncatedText, ctx.env.TOGETHER_API_KEY);
@@ -74,5 +75,6 @@ export default async function transform(
       name: row.name,
       vector: embedding,
     },
+    distance_metric: 'cosine_distance',
   };
 }
