@@ -4,15 +4,17 @@
 # Builder stage - compile Rust binary
 FROM rust:latest AS builder
 
-RUN apt-get update && apt-get install -y git pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git pkg-config libssl-dev nodejs npm && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-# Clone and build puffgres from source (cache bust: change date to force rebuild)
+# Clone and build puffgres from source
 RUN git clone https://github.com/lucasgelfond/puffgres.git . && \
-    git log --oneline -1 && \
     cargo build --release --package puffgres-cli && \
     cp target/release/puffgres /usr/local/bin/puffgres
+
+# Build the npm package for transform executor
+RUN npm --prefix npm install && npm --prefix npm run build
 
 # Runtime stage - use Debian Trixie to match GLIBC version from rust:latest builder
 FROM debian:trixie-slim
@@ -27,10 +29,17 @@ RUN apt-get update && apt-get install -y ca-certificates libssl3 curl && \
 # Copy the built binary from builder
 COPY --from=builder /usr/local/bin/puffgres /usr/local/bin/puffgres
 
+# Copy the npm package from builder
+COPY --from=builder /build/npm /opt/puffgres-npm
+
 WORKDIR /app
 
 # Copy package files first for better caching
 COPY package.json pnpm-lock.yaml* ./
+
+# Update package.json to use local npm package instead of registry
+RUN sed -i 's|"puffgres": "link:[^"]*"|"puffgres": "file:/opt/puffgres-npm"|g' package.json && \
+    sed -i 's|"puffgres": "\^[0-9.]*"|"puffgres": "file:/opt/puffgres-npm"|g' package.json
 
 # Install dependencies (includes puffgres npm package for transform executor)
 RUN pnpm install --frozen-lockfile || pnpm install
