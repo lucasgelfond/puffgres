@@ -97,10 +97,10 @@ pub fn get_referenced_transforms(migrations: &[LocalMigration]) -> Result<HashSe
 
 /// Validate that there are no unreferenced transforms in the transforms directory.
 ///
-/// Returns an error if there are .ts or .js files in puffgres/transforms/ that
+/// Returns an error if there are .ts or .js files in transforms/ that
 /// are not referenced by any migration's [transform].path.
 pub fn validate_no_unreferenced_transforms(migrations: &[LocalMigration]) -> Result<()> {
-    let transforms_dir = Path::new("puffgres/transforms");
+    let transforms_dir = Path::new("transforms");
     if !transforms_dir.exists() {
         return Ok(());
     }
@@ -151,7 +151,7 @@ pub fn validate_no_unreferenced_transforms(migrations: &[LocalMigration]) -> Res
 /// console.log writes to stdout which breaks the transform protocol.
 /// Users should use console.error for debugging instead.
 pub fn validate_no_console_log_in_transforms() -> Result<()> {
-    let transforms_dir = Path::new("puffgres/transforms");
+    let transforms_dir = Path::new("transforms");
     if !transforms_dir.exists() {
         return Ok(());
     }
@@ -204,12 +204,12 @@ pub async fn validate_transforms(
     // Check each stored transform against local files
     for transform in stored {
         let path = format!(
-            "puffgres/transforms/{}_{}.ts",
+            "transforms/{}_{}.ts",
             transform.mapping_name, transform.version
         );
 
         // Also check the simpler path format
-        let alt_path = format!("puffgres/transforms/{}.ts", transform.mapping_name);
+        let alt_path = format!("transforms/{}.ts", transform.mapping_name);
 
         let local_content = if Path::new(&path).exists() {
             Some(fs::read_to_string(&path)?)
@@ -495,7 +495,7 @@ mode = "source_lsn"
         // Should succeed when transforms dir doesn't exist
         let temp_dir = TempDir::new().unwrap();
 
-        // Change to temp directory (which has no puffgres/transforms)
+        // Change to temp directory (which has no transforms/)
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
@@ -515,7 +515,7 @@ mode = "source_lsn"
     #[serial]
     fn test_validate_no_unreferenced_transforms_all_referenced() {
         let temp_dir = TempDir::new().unwrap();
-        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        let transforms_dir = temp_dir.path().join("transforms");
         std::fs::create_dir_all(&transforms_dir).unwrap();
 
         // Create a transform file
@@ -543,7 +543,7 @@ mode = "source_lsn"
     #[serial]
     fn test_validate_no_unreferenced_transforms_unreferenced() {
         let temp_dir = TempDir::new().unwrap();
-        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        let transforms_dir = temp_dir.path().join("transforms");
         std::fs::create_dir_all(&transforms_dir).unwrap();
 
         // Create a transform file that is NOT referenced
@@ -580,7 +580,7 @@ mode = "source_lsn"
     fn test_validate_transforms_referenced_by_mapping_name() {
         // Test that transforms named after mapping_name are considered referenced
         let temp_dir = TempDir::new().unwrap();
-        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        let transforms_dir = temp_dir.path().join("transforms");
         std::fs::create_dir_all(&transforms_dir).unwrap();
 
         // Create a transform file named after the mapping_name (not explicitly in path)
@@ -610,7 +610,7 @@ mode = "source_lsn"
     #[serial]
     fn test_validate_no_console_log_passes_without_console_log() {
         let temp_dir = TempDir::new().unwrap();
-        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        let transforms_dir = temp_dir.path().join("transforms");
         std::fs::create_dir_all(&transforms_dir).unwrap();
 
         // Create a transform without console.log
@@ -634,7 +634,7 @@ mode = "source_lsn"
     #[serial]
     fn test_validate_no_console_log_fails_with_console_log() {
         let temp_dir = TempDir::new().unwrap();
-        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        let transforms_dir = temp_dir.path().join("transforms");
         std::fs::create_dir_all(&transforms_dir).unwrap();
 
         // Create a transform with console.log
@@ -674,7 +674,7 @@ mode = "source_lsn"
     #[serial]
     fn test_validate_console_error_is_allowed() {
         let temp_dir = TempDir::new().unwrap();
-        let transforms_dir = temp_dir.path().join("puffgres/transforms");
+        let transforms_dir = temp_dir.path().join("transforms");
         std::fs::create_dir_all(&transforms_dir).unwrap();
 
         // Create a transform with console.error (should be allowed)

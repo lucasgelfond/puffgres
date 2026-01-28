@@ -7,9 +7,9 @@ use colored::Colorize;
 use tracing::info;
 
 pub async fn cmd_init() -> Result<()> {
-    println!("Initializing puffgres in current directory...\n");
+    println!("Initializing puffgres project...\n");
 
-    // Create directories
+    // Create puffgres/ directory with migrations and transforms subdirectories
     fs::create_dir_all("puffgres/migrations")?;
     fs::create_dir_all("puffgres/transforms")?;
     info!("Created puffgres/migrations/ and puffgres/transforms/");
@@ -39,33 +39,30 @@ TURBOPUFFER_API_KEY=
 # PUFFGRES_MAX_RETRIES=5
 "#;
 
-    let env_example_path = Path::new(".env.example");
+    let env_example_path = Path::new("puffgres/.env.example");
     if !env_example_path.exists() {
         fs::write(env_example_path, env_example_content)?;
-        println!("Created .env.example");
+        println!("Created puffgres/.env.example");
     } else {
-        println!(".env.example already exists, skipping");
+        println!("puffgres/.env.example already exists, skipping");
     }
 
-    // Create .gitignore in puffgres directory
-    let gitignore = "# Local transform builds\nnode_modules/\n";
+    // Create .gitignore in puffgres/ directory
     let gitignore_path = Path::new("puffgres/.gitignore");
     if !gitignore_path.exists() {
-        fs::write(gitignore_path, gitignore)?;
+        fs::write(gitignore_path, "# Puffgres\n.env\nnode_modules/\n")?;
+        println!("Created puffgres/.gitignore");
     }
 
-    // Also add .env to root .gitignore if it exists
+    // Also add puffgres/.env to root .gitignore if it exists
     let root_gitignore = Path::new(".gitignore");
     if root_gitignore.exists() {
         let content = fs::read_to_string(root_gitignore)?;
-        if !content.contains(".env") {
+        if !content.contains("puffgres/.env") {
             let mut file = fs::OpenOptions::new().append(true).open(root_gitignore)?;
-            writeln!(file, "\n# Puffgres secrets\n.env")?;
-            println!("Added .env to .gitignore");
+            writeln!(file, "\n# Puffgres secrets\npuffgres/.env")?;
+            println!("Added puffgres/.env to .gitignore");
         }
-    } else {
-        fs::write(root_gitignore, "# Puffgres secrets\n.env\n")?;
-        println!("Created .gitignore with .env");
     }
 
     // Create Dockerfile for containerized deployments
@@ -105,15 +102,17 @@ COPY --from=builder /build/npm /opt/puffgres-npm
 
 WORKDIR /app
 
-# Copy puffgres directory (contains package.json, migrations, transforms)
-COPY puffgres ./puffgres
+# Copy puffgres project files (migrations, transforms, package.json)
+COPY migrations ./migrations
+COPY transforms ./transforms
+COPY package.json ./package.json
 
 # Update package.json to use local npm package instead of registry
-RUN sed -i 's|"puffgres": "link:[^"]*"|"puffgres": "file:/opt/puffgres-npm"|g' puffgres/package.json && \
-    sed -i 's|"puffgres": "\^[0-9.]*"|"puffgres": "file:/opt/puffgres-npm"|g' puffgres/package.json
+RUN sed -i 's|"puffgres": "link:[^"]*"|"puffgres": "file:/opt/puffgres-npm"|g' package.json && \
+    sed -i 's|"puffgres": "\^[0-9.]*"|"puffgres": "file:/opt/puffgres-npm"|g' package.json
 
 # Install dependencies (includes puffgres npm package for transform executor)
-RUN cd puffgres && (pnpm install --frozen-lockfile || pnpm install)
+RUN pnpm install --frozen-lockfile || pnpm install
 
 # Create .env file from environment variables at runtime, then run puffgres
 CMD ["sh", "-c", "printf 'DATABASE_URL=%s\\nTURBOPUFFER_API_KEY=%s\\nPUFFGRES_BASE_NAMESPACE=%s\\nPUFFGRES_TRANSFORM_BATCH_SIZE=%s\\nPUFFGRES_UPLOAD_BATCH_SIZE=%s\\nPUFFGRES_MAX_RETRIES=%s\\n' \"$DATABASE_URL\" \"$TURBOPUFFER_API_KEY\" \"$PUFFGRES_BASE_NAMESPACE\" \"$PUFFGRES_TRANSFORM_BATCH_SIZE\" \"$PUFFGRES_UPLOAD_BATCH_SIZE\" \"$PUFFGRES_MAX_RETRIES\" > .env && puffgres run"]
@@ -129,13 +128,15 @@ CMD ["sh", "-c", "printf 'DATABASE_URL=%s\\nTURBOPUFFER_API_KEY=%s\\nPUFFGRES_BA
 
     println!("\n{}", "Puffgres initialized!".green().bold());
     println!("\nNext steps:");
-    println!("  1. Copy .env.example to .env and fill in your credentials");
-    println!("  2. Run: cd puffgres && pnpm install");
-    println!("  3. Run: puffgres setup");
-    println!("  4. Run: puffgres new <table_name>");
-    println!("  5. Run: puffgres migrate");
-    println!("  6. Run: puffgres backfill <mapping_name>");
-    println!("  7. Run: puffgres run\n");
+    println!("  1. cd puffgres");
+    println!("  2. Copy .env.example to .env and fill in your credentials");
+    println!("  3. Run: pnpm install");
+    println!("  4. Run: puffgres setup");
+    println!("  5. Run: puffgres new <table_name>");
+    println!("  6. Run: puffgres migrate");
+    println!("  7. Run: puffgres backfill <mapping_name>");
+    println!("  8. Run: puffgres run");
+    println!("\nNote: All puffgres commands should be run from inside the puffgres/ directory.\n");
 
     Ok(())
 }

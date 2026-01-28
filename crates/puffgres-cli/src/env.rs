@@ -4,6 +4,38 @@ use tracing::{info, warn};
 /// Default batch size for processing transforms (rows per batch).
 pub const DEFAULT_TRANSFORM_BATCH_SIZE: usize = 100;
 
+/// Validate that we're running from a puffgres project directory.
+///
+/// A puffgres project directory has a `migrations/` directory (created by `puffgres init`).
+/// This should be called for commands that require being in the project directory.
+pub fn validate_project_directory() -> Result<()> {
+    let cwd = std::env::current_dir().context("Failed to get current directory")?;
+    let migrations_dir = cwd.join("migrations");
+
+    if !migrations_dir.exists() {
+        // Check if user is in a parent directory with puffgres/ subdirectory
+        let puffgres_subdir = cwd.join("puffgres");
+        if puffgres_subdir.exists() && puffgres_subdir.join("migrations").exists() {
+            anyhow::bail!(
+                "Not in a puffgres project directory.\n\n\
+                 Found puffgres/ subdirectory. Please run commands from inside it:\n\n\
+                 \x20 cd puffgres\n\
+                 \x20 puffgres <command>"
+            );
+        }
+
+        anyhow::bail!(
+            "Not in a puffgres project directory.\n\n\
+             Expected to find migrations/ directory.\n\
+             Current directory: {}\n\n\
+             To create a new puffgres project, run 'puffgres init' first.",
+            cwd.display()
+        );
+    }
+
+    Ok(())
+}
+
 /// Default batch size for uploading to turbopuffer (documents per API call).
 pub const DEFAULT_UPLOAD_BATCH_SIZE: usize = 500;
 

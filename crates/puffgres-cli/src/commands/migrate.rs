@@ -23,7 +23,7 @@ pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
     // Load local migrations
     let local = config.load_local_migrations()?;
     if local.is_empty() {
-        println!("No migrations found in puffgres/migrations/");
+        println!("No migrations found in migrations/");
         return Ok(());
     }
 
@@ -158,7 +158,7 @@ pub async fn cmd_migrate(config: ProjectConfig, dry_run: bool) -> Result<()> {
         // Check if this migration has a transform with a path
         let migration_config = puffgres_config::MigrationConfig::parse(&migration.content)?;
         if let Some(path) = &migration_config.transform.path {
-            let transform_path = Path::new("puffgres").join(path.trim_start_matches("./"));
+            let transform_path = Path::new(path.trim_start_matches("./"));
             if transform_path.exists() {
                 let transform_content = fs::read_to_string(&transform_path)?;
                 store_transform(

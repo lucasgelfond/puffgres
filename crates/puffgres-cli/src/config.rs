@@ -170,7 +170,7 @@ impl ProjectConfig {
     /// Load all migrations from the migrations directory.
     /// Applies the base namespace prefix if configured.
     pub fn load_migrations(&self) -> Result<Vec<Mapping>> {
-        let migrations_dir = Path::new("puffgres/migrations");
+        let migrations_dir = Path::new("migrations");
 
         if !migrations_dir.exists() {
             return Ok(vec![]);
@@ -207,7 +207,7 @@ impl ProjectConfig {
 
     /// Load all local migration files with their content for hashing.
     pub fn load_local_migrations(&self) -> Result<Vec<LocalMigration>> {
-        let migrations_dir = Path::new("puffgres/migrations");
+        let migrations_dir = Path::new("migrations");
 
         if !migrations_dir.exists() {
             return Ok(vec![]);

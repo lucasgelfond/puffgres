@@ -6,9 +6,9 @@ use colored::Colorize;
 use dialoguer::{Confirm, Input};
 
 pub async fn cmd_new(name: Option<String>) -> Result<()> {
-    // Check that puffgres is initialized
-    if !Path::new("puffgres/migrations").exists() {
-        anyhow::bail!("puffgres is not initialized in this directory. Run 'puffgres init' first.");
+    // Check that puffgres is initialized (validated by main.rs, but double-check)
+    if !Path::new("migrations").exists() {
+        anyhow::bail!("Not in a puffgres project directory. Run 'puffgres init' first.");
     }
 
     // Get the migration name
@@ -36,7 +36,7 @@ pub async fn cmd_new(name: Option<String>) -> Result<()> {
 
     // Find the next version number
     let mut max_version = 0;
-    for entry in fs::read_dir("puffgres/migrations")? {
+    for entry in fs::read_dir("migrations")? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().map_or(false, |ext| ext == "toml") {
@@ -77,7 +77,7 @@ mode = "source_lsn"
 
 [transform]
 type = "js"
-path = "./puffgres/transforms/{name}.ts"
+path = "./transforms/{name}.ts"
 "#,
             name = safe_name,
             version = next_version
@@ -113,7 +113,7 @@ mode = "source_lsn"
         )
     };
 
-    let migration_path = format!("puffgres/migrations/{:04}_{}.toml", next_version, safe_name);
+    let migration_path = format!("migrations/{:04}_{}.toml", next_version, safe_name);
     fs::write(&migration_path, &migration)?;
     println!("{}", format!("Created {}", migration_path).green());
 
@@ -221,7 +221,7 @@ export default async function transform(
 "#
         );
 
-        let transform_path = format!("puffgres/transforms/{}.ts", safe_name);
+        let transform_path = format!("transforms/{}.ts", safe_name);
         if !Path::new(&transform_path).exists() {
             fs::write(&transform_path, &transform)?;
             println!("{}", format!("Created {}", transform_path).green());
@@ -230,7 +230,7 @@ export default async function transform(
         println!("\nNext steps:");
         println!("  1. Edit {} to match your table schema", migration_path);
         println!(
-            "  2. Edit puffgres/transforms/{}.ts with your transform logic",
+            "  2. Edit transforms/{}.ts with your transform logic",
             safe_name
         );
         println!("  3. Run: puffgres migrate");

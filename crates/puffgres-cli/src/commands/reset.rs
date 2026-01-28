@@ -28,12 +28,12 @@ pub async fn cmd_reset(config: ProjectConfig) -> Result<()> {
     let transforms = store.get_all_transforms().await?;
 
     // Create migrations directory if it doesn't exist
-    fs::create_dir_all("puffgres/migrations")?;
-    fs::create_dir_all("puffgres/transforms")?;
+    fs::create_dir_all("migrations")?;
+    fs::create_dir_all("transforms")?;
 
     // Clear existing local migrations
-    if Path::new("puffgres/migrations").exists() {
-        for entry in fs::read_dir("puffgres/migrations")? {
+    if Path::new("migrations").exists() {
+        for entry in fs::read_dir("migrations")? {
             let entry = entry?;
             let path = entry.path();
             if path.extension().map_or(false, |ext| ext == "toml") {
@@ -44,8 +44,8 @@ pub async fn cmd_reset(config: ProjectConfig) -> Result<()> {
     }
 
     // Clear existing local transforms
-    if Path::new("puffgres/transforms").exists() {
-        for entry in fs::read_dir("puffgres/transforms")? {
+    if Path::new("transforms").exists() {
+        for entry in fs::read_dir("transforms")? {
             let entry = entry?;
             let path = entry.path();
             if path
@@ -81,7 +81,7 @@ pub async fn cmd_reset(config: ProjectConfig) -> Result<()> {
                 version,
                 mapping_name.replace("_public", "")
             );
-            let path = format!("puffgres/migrations/{}", filename);
+            let path = format!("migrations/{}", filename);
             fs::write(&path, &content)?;
             println!("  Restored {}", path);
         }
@@ -91,7 +91,7 @@ pub async fn cmd_reset(config: ProjectConfig) -> Result<()> {
     if !transforms.is_empty() {
         println!("\nRestoring transforms from database:");
         for transform in transforms {
-            let path = format!("puffgres/transforms/{}.ts", transform.mapping_name);
+            let path = format!("transforms/{}.ts", transform.mapping_name);
             fs::write(&path, &transform.content)?;
             println!("  Restored {}", path);
         }

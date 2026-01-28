@@ -26,6 +26,13 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // For most commands, validate we're in a puffgres project directory
+    // `init` is the exception - it creates the project structure
+    let needs_project_dir = !matches!(cli.command, Commands::Init);
+    if needs_project_dir {
+        env::validate_project_directory()?;
+    }
+
     // Load .env file from current directory or any parent directory
     // For `init` and `new`, try to load but don't require it
     let env_required = !matches!(cli.command, Commands::Init | Commands::New { .. });

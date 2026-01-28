@@ -18,7 +18,7 @@ pub async fn cmd_dangerously_delete_config(config: ProjectConfig) -> Result<()> 
     println!("    - __puffgres_dlq");
     println!("    - __puffgres_backfill");
     println!("    - __puffgres_transforms");
-    println!("  • Remove local puffgres/ directory");
+    println!("  • Remove local migrations/ and transforms/ directories");
     println!();
     println!("{}", "This action may be difficult to recover from!".red());
     println!();
@@ -50,10 +50,14 @@ pub async fn cmd_dangerously_delete_config(config: ProjectConfig) -> Result<()> 
         .context("Failed to drop tables")?;
     println!("  ✓ Deleted Postgres tables");
 
-    // Remove local files
-    if Path::new("puffgres").exists() {
-        fs::remove_dir_all("puffgres")?;
-        println!("  ✓ Removed puffgres/ directory");
+    // Remove local directories
+    if Path::new("migrations").exists() {
+        fs::remove_dir_all("migrations")?;
+        println!("  ✓ Removed migrations/ directory");
+    }
+    if Path::new("transforms").exists() {
+        fs::remove_dir_all("transforms")?;
+        println!("  ✓ Removed transforms/ directory");
     }
 
     println!("\n{}", "Puffgres configuration deleted.".green());

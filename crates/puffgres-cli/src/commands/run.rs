@@ -27,7 +27,7 @@ pub async fn cmd_run(
     // Load and validate migrations
     let local = config.load_local_migrations()?;
     if local.is_empty() {
-        anyhow::bail!("No migrations found in puffgres/migrations/");
+        anyhow::bail!("No migrations found in migrations/");
     }
 
     // Validate that all referenced tables exist before proceeding
@@ -111,7 +111,7 @@ pub async fn cmd_run(
 
                 let migration_config = puffgres_config::MigrationConfig::parse(&migration.content)?;
                 if let Some(path) = &migration_config.transform.path {
-                    let transform_path = Path::new("puffgres").join(path.trim_start_matches("./"));
+                    let transform_path = Path::new(path.trim_start_matches("./"));
                     if transform_path.exists() {
                         let transform_content = fs::read_to_string(&transform_path)?;
                         store_transform(
