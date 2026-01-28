@@ -105,35 +105,32 @@ COPY --from=builder /build/npm /opt/puffgres-npm
 
 WORKDIR /app
 
-# Copy package files first for better caching
-COPY package.json pnpm-lock.yaml* ./
+# Copy puffgres directory (contains package.json, migrations, transforms)
+COPY puffgres ./puffgres
 
 # Update package.json to use local npm package instead of registry
-RUN sed -i 's|"puffgres": "link:[^"]*"|"puffgres": "file:/opt/puffgres-npm"|g' package.json && \
-    sed -i 's|"puffgres": "\^[0-9.]*"|"puffgres": "file:/opt/puffgres-npm"|g' package.json
+RUN sed -i 's|"puffgres": "link:[^"]*"|"puffgres": "file:/opt/puffgres-npm"|g' puffgres/package.json && \
+    sed -i 's|"puffgres": "\^[0-9.]*"|"puffgres": "file:/opt/puffgres-npm"|g' puffgres/package.json
 
 # Install dependencies (includes puffgres npm package for transform executor)
-RUN pnpm install --frozen-lockfile || pnpm install
-
-# Copy the rest of the application
-COPY . .
+RUN cd puffgres && (pnpm install --frozen-lockfile || pnpm install)
 
 # Create .env file from environment variables at runtime, then run puffgres
 CMD ["sh", "-c", "printf 'DATABASE_URL=%s\\nTURBOPUFFER_API_KEY=%s\\nPUFFGRES_BASE_NAMESPACE=%s\\nPUFFGRES_TRANSFORM_BATCH_SIZE=%s\\nPUFFGRES_UPLOAD_BATCH_SIZE=%s\\nPUFFGRES_MAX_RETRIES=%s\\n' \"$DATABASE_URL\" \"$TURBOPUFFER_API_KEY\" \"$PUFFGRES_BASE_NAMESPACE\" \"$PUFFGRES_TRANSFORM_BATCH_SIZE\" \"$PUFFGRES_UPLOAD_BATCH_SIZE\" \"$PUFFGRES_MAX_RETRIES\" > .env && puffgres run"]
 "#;
 
-    let dockerfile_path = Path::new("Dockerfile");
+    let dockerfile_path = Path::new("puffgres/Dockerfile");
     if !dockerfile_path.exists() {
         fs::write(dockerfile_path, dockerfile_content)?;
-        println!("Created Dockerfile");
+        println!("Created puffgres/Dockerfile");
     } else {
-        println!("Dockerfile already exists, skipping");
+        println!("puffgres/Dockerfile already exists, skipping");
     }
 
     println!("\n{}", "Puffgres initialized!".green().bold());
     println!("\nNext steps:");
     println!("  1. Copy .env.example to .env and fill in your credentials");
-    println!("  2. Run: pnpm install");
+    println!("  2. Run: cd puffgres && pnpm install");
     println!("  3. Run: puffgres setup");
     println!("  4. Run: puffgres new <table_name>");
     println!("  5. Run: puffgres migrate");
@@ -145,7 +142,7 @@ CMD ["sh", "-c", "printf 'DATABASE_URL=%s\\nTURBOPUFFER_API_KEY=%s\\nPUFFGRES_BA
 
 /// Ensure package.json exists with required dependencies for transforms.
 fn ensure_package_json() -> Result<()> {
-    let package_json_path = Path::new("package.json");
+    let package_json_path = Path::new("puffgres/package.json");
 
     if package_json_path.exists() {
         // Read existing package.json and check for tsx
@@ -186,7 +183,7 @@ fn ensure_package_json() -> Result<()> {
     } else {
         // Create new package.json
         let pkg = serde_json::json!({
-            "name": "my-puffgres-project",
+            "name": "puffgres-transforms",
             "private": true,
             "type": "module",
             "scripts": {
