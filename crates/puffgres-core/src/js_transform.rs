@@ -16,6 +16,8 @@ pub struct JsTransformer {
     transform_path: String,
     /// Path to the transform runner script.
     runner_path: Option<String>,
+    /// Allow returning fewer results than input rows (e.g., for deduplication).
+    allow_fewer_results: bool,
 }
 
 impl JsTransformer {
@@ -24,12 +26,19 @@ impl JsTransformer {
         Self {
             transform_path: transform_path.into(),
             runner_path: None,
+            allow_fewer_results: false,
         }
     }
 
     /// Set the path to the transform runner script.
     pub fn with_runner_path(mut self, path: impl Into<String>) -> Self {
         self.runner_path = Some(path.into());
+        self
+    }
+
+    /// Allow the transform to return fewer results than input rows.
+    pub fn with_allow_fewer_results(mut self, allow: bool) -> Self {
+        self.allow_fewer_results = allow;
         self
     }
 
@@ -111,19 +120,28 @@ impl JsTransformer {
             Error::TransformError(format!("Failed to parse transform result: {}", e))
         })?;
 
-        if results.len() != rows.len() {
+        // Validate result count
+        if results.len() > rows.len() {
             return Err(Error::TransformError(format!(
-                "Transform returned {} results, expected {}",
+                "Transform returned {} results, but only {} rows were provided",
+                results.len(),
+                rows.len()
+            )));
+        }
+
+        if results.len() < rows.len() && !self.allow_fewer_results {
+            return Err(Error::TransformError(format!(
+                "Transform returned {} results, expected {}. Set allow_fewer_results = true in the transform config to allow deduplication.",
                 results.len(),
                 rows.len()
             )));
         }
 
         // Convert each result to an Action
+        // When allow_fewer_results is true, results may not correspond 1:1 with input rows
         results
             .iter()
-            .zip(rows.iter())
-            .map(|(result, (_, id))| parse_action(result, id.clone()))
+            .map(|result| parse_action(result, DocumentId::Uint(0))) // ID comes from the result itself
             .collect()
     }
 

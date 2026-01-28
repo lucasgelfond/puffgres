@@ -48,7 +48,9 @@ fn create_transformer(mapping: &Mapping) -> MappingTransformer {
     match &mapping.transform {
         Some(config) if config.transform_type == TransformType::Js => {
             if let Some(path) = &config.path {
-                MappingTransformer::Js(JsTransformer::new(path))
+                MappingTransformer::Js(
+                    JsTransformer::new(path).with_allow_fewer_results(config.allow_fewer_results),
+                )
             } else {
                 // No path specified, use identity
                 MappingTransformer::Identity(IdentityTransformer::new(mapping.columns.clone()))

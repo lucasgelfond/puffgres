@@ -49,7 +49,9 @@ fn create_transformer(mapping: &Mapping) -> MappingTransformer {
     match &mapping.transform {
         Some(config) if config.transform_type == TransformType::Js => {
             if let Some(path) = &config.path {
-                MappingTransformer::Js(JsTransformer::new(path))
+                MappingTransformer::Js(
+                    JsTransformer::new(path).with_allow_fewer_results(config.allow_fewer_results),
+                )
             } else {
                 // No path specified, use identity
                 MappingTransformer::Identity(IdentityTransformer::new(mapping.columns.clone()))
@@ -308,18 +310,13 @@ async fn process_transform_batch(
         "Processing transform batch"
     );
 
-    let actions = match transformer.transform_batch(rows) {
-        Ok(actions) => actions,
-        Err(e) => {
-            warn!(
-                mapping = %mapping.name,
-                error = %e,
-                batch_size = rows.len(),
-                "Transform batch failed during backfill"
-            );
-            return Ok(0);
-        }
-    };
+    let actions = transformer.transform_batch(rows).map_err(|e| {
+        anyhow::anyhow!(
+            "Transform failed for mapping '{}': {}",
+            mapping.name,
+            e
+        )
+    })?;
 
     let mut upserted = 0;
     for action in actions {

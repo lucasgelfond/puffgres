@@ -35,6 +35,9 @@ pub struct TransformConfig {
     pub path: Option<String>,
     /// Entry function name (defaults to "default").
     pub entry: Option<String>,
+    /// Allow the transform to return fewer results than input rows (e.g., for deduplication).
+    /// By default, transforms must return exactly one result per input row.
+    pub allow_fewer_results: bool,
 }
 
 /// Transform type.

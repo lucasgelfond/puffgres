@@ -96,6 +96,7 @@ pub fn to_mapping(config: &MigrationConfig) -> ConfigResult<puffgres_core::Mappi
             },
             path: config.transform.path.clone(),
             entry: config.transform.entry.clone(),
+            allow_fewer_results: config.transform.allow_fewer_results,
         })
     } else {
         None

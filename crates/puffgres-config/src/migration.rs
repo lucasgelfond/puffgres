@@ -116,6 +116,9 @@ pub struct TransformConfig {
     pub path: Option<String>,
     /// Entry function name.
     pub entry: Option<String>,
+    /// Allow the transform to return fewer results than input rows (e.g., for deduplication).
+    #[serde(default)]
+    pub allow_fewer_results: bool,
 }
 
 /// Transform type.
