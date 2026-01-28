@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     // Load .env file from current directory or any parent directory
     // For `init` and `new`, try to load but don't require it
     let env_required = !matches!(cli.command, Commands::Init | Commands::New { .. });
-    if let Err(e) = env::load_dotenv_from_ancestors() {
+    if let Err(e) = env::load_dotenv_from_ancestors(cli.env.as_deref()) {
         if env_required {
             return Err(e);
         }

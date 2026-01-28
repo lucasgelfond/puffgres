@@ -48,19 +48,26 @@ pub fn get_max_retries() -> u32 {
         .unwrap_or(DEFAULT_MAX_RETRIES)
 }
 
-/// Load .env file from current directory or any parent directory
+/// Load .env file from current directory or any parent directory.
 /// Searches from the current working directory up to the filesystem root,
-/// loading the first .env file found.
-pub fn load_dotenv_from_ancestors() -> Result<()> {
+/// loading the first matching .env file found.
+///
+/// If `env_name` is provided, looks for `.env.{env_name}` (e.g., `.env.development`).
+/// Otherwise, looks for `.env`.
+pub fn load_dotenv_from_ancestors(env_name: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
+    let filename = match env_name {
+        Some(name) => format!(".env.{}", name),
+        None => ".env".to_string(),
+    };
 
     let mut current = cwd.as_path();
     loop {
-        let env_path = current.join(".env");
+        let env_path = current.join(&filename);
         if env_path.exists() {
             dotenvy::from_path(&env_path)
-                .with_context(|| format!("Failed to load .env from {}", env_path.display()))?;
-            info!("Loaded .env from {}", env_path.display());
+                .with_context(|| format!("Failed to load {} from {}", filename, env_path.display()))?;
+            info!("Loaded {} from {}", filename, env_path.display());
             return Ok(());
         }
 
@@ -71,14 +78,16 @@ pub fn load_dotenv_from_ancestors() -> Result<()> {
     }
 
     anyhow::bail!(
-        "No .env file found.\n\n\
+        "No {} file found.\n\n\
         Searched from {} to filesystem root.\n\n\
-        Hint: Create a .env file with your DATABASE_URL and TURBOPUFFER_API_KEY:\n\
+        Hint: Create a {} file with your DATABASE_URL and TURBOPUFFER_API_KEY:\n\
         \n  \
         DATABASE_URL=postgresql://user:pass@host:5432/db\n  \
         TURBOPUFFER_API_KEY=your-api-key\n\n\
         Or run 'puffgres init' to create one.",
-        cwd.display()
+        filename,
+        cwd.display(),
+        filename
     )
 }
 
@@ -102,7 +111,7 @@ mod tests {
         // Clear any existing value
         std::env::remove_var("TEST_VAR_CURRENT");
 
-        let result = load_dotenv_from_ancestors();
+        let result = load_dotenv_from_ancestors(None);
         assert!(result.is_ok(), "Should find .env in current directory");
         assert_eq!(
             std::env::var("TEST_VAR_CURRENT").unwrap(),
@@ -132,7 +141,7 @@ mod tests {
         // Clear any existing value
         std::env::remove_var("TEST_VAR_PARENT");
 
-        let result = load_dotenv_from_ancestors();
+        let result = load_dotenv_from_ancestors(None);
         assert!(result.is_ok(), "Should find .env in parent directory");
         assert_eq!(
             std::env::var("TEST_VAR_PARENT").unwrap(),
@@ -163,7 +172,7 @@ mod tests {
         // Clear any existing value
         std::env::remove_var("TEST_VAR_GRANDPARENT");
 
-        let result = load_dotenv_from_ancestors();
+        let result = load_dotenv_from_ancestors(None);
         assert!(result.is_ok(), "Should find .env in grandparent directory");
         assert_eq!(
             std::env::var("TEST_VAR_GRANDPARENT").unwrap(),
@@ -193,7 +202,7 @@ mod tests {
         // Clear any existing value
         std::env::remove_var("TEST_VAR_CLOSEST");
 
-        let result = load_dotenv_from_ancestors();
+        let result = load_dotenv_from_ancestors(None);
         assert!(result.is_ok());
         assert_eq!(
             std::env::var("TEST_VAR_CLOSEST").unwrap(),
@@ -215,13 +224,62 @@ mod tests {
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = load_dotenv_from_ancestors();
+        let result = load_dotenv_from_ancestors(None);
         assert!(result.is_err(), "Should error when no .env file found");
 
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("No .env file found"),
             "Error should mention no .env found"
+        );
+
+        // Cleanup
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_dotenv_with_env_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let env_path = temp_dir.path().join(".env.development");
+        fs::write(&env_path, "TEST_VAR_DEV=devvalue").unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        // Clear any existing value
+        std::env::remove_var("TEST_VAR_DEV");
+
+        let result = load_dotenv_from_ancestors(Some("development"));
+        assert!(result.is_ok(), "Should find .env.development in current directory");
+        assert_eq!(
+            std::env::var("TEST_VAR_DEV").unwrap(),
+            "devvalue",
+            "Should load env var from .env.development"
+        );
+
+        // Cleanup
+        std::env::set_current_dir(original_dir).unwrap();
+        std::env::remove_var("TEST_VAR_DEV");
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_dotenv_with_env_name_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        // Create .env but not .env.production
+        fs::write(temp_dir.path().join(".env"), "TEST_VAR=base").unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = load_dotenv_from_ancestors(Some("production"));
+        assert!(result.is_err(), "Should error when .env.production not found");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains(".env.production"),
+            "Error should mention .env.production"
         );
 
         // Cleanup

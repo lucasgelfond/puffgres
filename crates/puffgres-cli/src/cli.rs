@@ -5,6 +5,10 @@ use clap::{Parser, Subcommand};
 #[command(about = "Mirror Postgres data to turbopuffer")]
 #[command(version)]
 pub struct Cli {
+    /// Environment to load (loads .env.{ENV} instead of .env)
+    #[arg(short, long, global = true)]
+    pub env: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
