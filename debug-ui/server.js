@@ -8,21 +8,26 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Simple .env loader - looks for .env in current dir or parent dirs
+// Simple .env loader - looks for .env* files in current dir and parent dirs
+function loadEnvFile(envPath) {
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, 'utf8');
+    content.split('\n').forEach(line => {
+      const match = line.match(/^\s*([^#=]+?)\s*=\s*(.*)$/);
+      if (match && !process.env[match[1]]) {
+        process.env[match[1]] = match[2].replace(/^["']|["']$/g, '');
+      }
+    });
+    console.log(`Loaded env from ${envPath}`);
+  }
+}
+
 function loadEnv() {
   let dir = process.cwd();
   while (dir !== path.dirname(dir)) {
-    const envPath = path.join(dir, '.env');
-    if (fs.existsSync(envPath)) {
-      const content = fs.readFileSync(envPath, 'utf8');
-      content.split('\n').forEach(line => {
-        const match = line.match(/^\s*([^#=]+?)\s*=\s*(.*)$/);
-        if (match && !process.env[match[1]]) {
-          process.env[match[1]] = match[2].replace(/^["']|["']$/g, '');
-        }
-      });
-      console.log(`Loaded .env from ${envPath}`);
-      return;
+    const files = fs.readdirSync(dir).filter(f => f.startsWith('.env'));
+    for (const file of files) {
+      loadEnvFile(path.join(dir, file));
     }
     dir = path.dirname(dir);
   }
