@@ -48,27 +48,64 @@ pub fn get_max_retries() -> u32 {
         .unwrap_or(DEFAULT_MAX_RETRIES)
 }
 
-/// Load .env file from current directory or any parent directory.
-/// Searches from the current working directory up to the filesystem root,
-/// loading the first matching .env file found.
+/// Load .env files using Next.js-style hierarchical loading.
 ///
-/// If `env_name` is provided, looks for `.env.{env_name}` (e.g., `.env.development`).
-/// Otherwise, looks for `.env`.
+/// Files are loaded in this priority order (highest wins):
+/// 1. `.env.{env}.local` - Local overrides for specific environment
+/// 2. `.env.local` - Local overrides (typically gitignored)
+/// 3. `.env.{env}` - Environment-specific settings
+/// 4. `.env` - Base/default settings
+///
+/// Since dotenvy doesn't override existing variables, we load highest priority first.
+/// Only `.env` is required; all other files are optional.
 pub fn load_dotenv_from_ancestors(env_name: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
-    let filename = match env_name {
-        Some(name) => format!(".env.{}", name),
-        None => ".env".to_string(),
-    };
 
-    let mut current = cwd.as_path();
+    // Find the directory containing a .env file
+    let env_dir = find_env_directory(&cwd)?;
+
+    // Load files in priority order (highest first, since dotenvy won't override)
+    let mut loaded_files = Vec::new();
+
+    if let Some(name) = env_name {
+        // .env.{name}.local - highest priority
+        if let Some(path) = try_load_env_file(&env_dir, &format!(".env.{}.local", name))? {
+            loaded_files.push(path);
+        }
+    }
+
+    // .env.local
+    if let Some(path) = try_load_env_file(&env_dir, ".env.local")? {
+        loaded_files.push(path);
+    }
+
+    if let Some(name) = env_name {
+        // .env.{name}
+        if let Some(path) = try_load_env_file(&env_dir, &format!(".env.{}", name))? {
+            loaded_files.push(path);
+        }
+    }
+
+    // .env - base file (required)
+    let base_env_path = env_dir.join(".env");
+    dotenvy::from_path(&base_env_path)
+        .with_context(|| format!("Failed to load .env from {}", base_env_path.display()))?;
+    loaded_files.push(base_env_path);
+
+    // Log all loaded files (in priority order)
+    for path in &loaded_files {
+        info!("Loaded {}", path.display());
+    }
+
+    Ok(())
+}
+
+/// Find the nearest ancestor directory containing a .env file.
+fn find_env_directory(start: &std::path::Path) -> Result<std::path::PathBuf> {
+    let mut current = start;
     loop {
-        let env_path = current.join(&filename);
-        if env_path.exists() {
-            dotenvy::from_path(&env_path)
-                .with_context(|| format!("Failed to load {} from {}", filename, env_path.display()))?;
-            info!("Loaded {} from {}", filename, env_path.display());
-            return Ok(());
+        if current.join(".env").exists() {
+            return Ok(current.to_path_buf());
         }
 
         match current.parent() {
@@ -78,17 +115,27 @@ pub fn load_dotenv_from_ancestors(env_name: Option<&str>) -> Result<()> {
     }
 
     anyhow::bail!(
-        "No {} file found.\n\n\
+        "No .env file found.\n\n\
         Searched from {} to filesystem root.\n\n\
-        Hint: Create a {} file with your DATABASE_URL and TURBOPUFFER_API_KEY:\n\
+        Hint: Create a .env file with your DATABASE_URL and TURBOPUFFER_API_KEY:\n\
         \n  \
         DATABASE_URL=postgresql://user:pass@host:5432/db\n  \
         TURBOPUFFER_API_KEY=your-api-key\n\n\
         Or run 'puffgres init' to create one.",
-        filename,
-        cwd.display(),
-        filename
+        start.display()
     )
+}
+
+/// Try to load an env file, returning the path if it exists and was loaded.
+fn try_load_env_file(dir: &std::path::Path, filename: &str) -> Result<Option<std::path::PathBuf>> {
+    let path = dir.join(filename);
+    if path.exists() {
+        dotenvy::from_path(&path)
+            .with_context(|| format!("Failed to load {} from {}", filename, path.display()))?;
+        Ok(Some(path))
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
@@ -241,49 +288,164 @@ mod tests {
     #[serial]
     fn test_load_dotenv_with_env_name() {
         let temp_dir = TempDir::new().unwrap();
-        let env_path = temp_dir.path().join(".env.development");
-        fs::write(&env_path, "TEST_VAR_DEV=devvalue").unwrap();
+        // Base .env is required
+        fs::write(temp_dir.path().join(".env"), "TEST_VAR_BASE=base").unwrap();
+        // Environment-specific file
+        fs::write(
+            temp_dir.path().join(".env.development"),
+            "TEST_VAR_DEV=devvalue",
+        )
+        .unwrap();
 
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        // Clear any existing value
+        // Clear any existing values
         std::env::remove_var("TEST_VAR_DEV");
+        std::env::remove_var("TEST_VAR_BASE");
 
         let result = load_dotenv_from_ancestors(Some("development"));
-        assert!(result.is_ok(), "Should find .env.development in current directory");
+        assert!(
+            result.is_ok(),
+            "Should load .env and .env.development: {:?}",
+            result
+        );
         assert_eq!(
             std::env::var("TEST_VAR_DEV").unwrap(),
             "devvalue",
             "Should load env var from .env.development"
         );
-
-        // Cleanup
-        std::env::set_current_dir(original_dir).unwrap();
-        std::env::remove_var("TEST_VAR_DEV");
-    }
-
-    #[test]
-    #[serial]
-    fn test_load_dotenv_with_env_name_not_found() {
-        let temp_dir = TempDir::new().unwrap();
-        // Create .env but not .env.production
-        fs::write(temp_dir.path().join(".env"), "TEST_VAR=base").unwrap();
-
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(temp_dir.path()).unwrap();
-
-        let result = load_dotenv_from_ancestors(Some("production"));
-        assert!(result.is_err(), "Should error when .env.production not found");
-
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains(".env.production"),
-            "Error should mention .env.production"
+        assert_eq!(
+            std::env::var("TEST_VAR_BASE").unwrap(),
+            "base",
+            "Should also load env var from base .env"
         );
 
         // Cleanup
         std::env::set_current_dir(original_dir).unwrap();
+        std::env::remove_var("TEST_VAR_DEV");
+        std::env::remove_var("TEST_VAR_BASE");
+    }
+
+    #[test]
+    #[serial]
+    fn test_hierarchical_override_env_specific_wins() {
+        let temp_dir = TempDir::new().unwrap();
+        // Base .env sets a value
+        fs::write(temp_dir.path().join(".env"), "TEST_VAR_OVERRIDE=from_base").unwrap();
+        // .env.development overrides it
+        fs::write(
+            temp_dir.path().join(".env.development"),
+            "TEST_VAR_OVERRIDE=from_dev",
+        )
+        .unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        std::env::remove_var("TEST_VAR_OVERRIDE");
+
+        let result = load_dotenv_from_ancestors(Some("development"));
+        assert!(result.is_ok());
+        assert_eq!(
+            std::env::var("TEST_VAR_OVERRIDE").unwrap(),
+            "from_dev",
+            ".env.development should override .env"
+        );
+
+        // Cleanup
+        std::env::set_current_dir(original_dir).unwrap();
+        std::env::remove_var("TEST_VAR_OVERRIDE");
+    }
+
+    #[test]
+    #[serial]
+    fn test_hierarchical_override_local_wins() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join(".env"), "TEST_VAR_LOCAL=from_base").unwrap();
+        fs::write(
+            temp_dir.path().join(".env.local"),
+            "TEST_VAR_LOCAL=from_local",
+        )
+        .unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        std::env::remove_var("TEST_VAR_LOCAL");
+
+        let result = load_dotenv_from_ancestors(None);
+        assert!(result.is_ok());
+        assert_eq!(
+            std::env::var("TEST_VAR_LOCAL").unwrap(),
+            "from_local",
+            ".env.local should override .env"
+        );
+
+        // Cleanup
+        std::env::set_current_dir(original_dir).unwrap();
+        std::env::remove_var("TEST_VAR_LOCAL");
+    }
+
+    #[test]
+    #[serial]
+    fn test_hierarchical_full_chain() {
+        let temp_dir = TempDir::new().unwrap();
+        // All four files in the hierarchy
+        fs::write(temp_dir.path().join(".env"), "VAR=base").unwrap();
+        fs::write(temp_dir.path().join(".env.local"), "VAR=local").unwrap();
+        fs::write(temp_dir.path().join(".env.staging"), "VAR=staging").unwrap();
+        fs::write(
+            temp_dir.path().join(".env.staging.local"),
+            "VAR=staging_local",
+        )
+        .unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        std::env::remove_var("VAR");
+
+        let result = load_dotenv_from_ancestors(Some("staging"));
+        assert!(result.is_ok());
+        assert_eq!(
+            std::env::var("VAR").unwrap(),
+            "staging_local",
+            ".env.staging.local should win over all others"
+        );
+
+        // Cleanup
+        std::env::set_current_dir(original_dir).unwrap();
+        std::env::remove_var("VAR");
+    }
+
+    #[test]
+    #[serial]
+    fn test_env_specific_optional_when_base_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        // Only base .env exists, no .env.production
+        fs::write(temp_dir.path().join(".env"), "TEST_VAR_OPT=base").unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        std::env::remove_var("TEST_VAR_OPT");
+
+        // Should succeed even without .env.production
+        let result = load_dotenv_from_ancestors(Some("production"));
+        assert!(
+            result.is_ok(),
+            "Should succeed with just .env when .env.production doesn't exist"
+        );
+        assert_eq!(
+            std::env::var("TEST_VAR_OPT").unwrap(),
+            "base",
+            "Should load from base .env"
+        );
+
+        // Cleanup
+        std::env::set_current_dir(original_dir).unwrap();
+        std::env::remove_var("TEST_VAR_OPT");
     }
 
     #[test]
