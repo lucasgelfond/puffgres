@@ -126,8 +126,8 @@ pub async fn run_backfill(
         }
     }
 
-    // Initialize turbopuffer client
-    let tp_client = rs_puff::Client::new(config.turbopuffer_api_key()?);
+    // Initialize turbopuffer client with region support
+    let tp_client = config.create_turbopuffer_client()?;
 
     // Create transformer - uses JS transform if configured, otherwise identity
     let transformer = create_transformer(mapping);

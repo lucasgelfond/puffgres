@@ -111,7 +111,7 @@ pub async fn run_cdc_loop(
         .await
         .context("Failed to connect for streaming replication")?;
 
-    let tp_client = rs_puff::Client::new(config.turbopuffer_api_key()?);
+    let tp_client = config.create_turbopuffer_client()?;
     let router = Router::new(mappings.clone());
 
     let transformers: Vec<_> = mappings

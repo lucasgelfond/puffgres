@@ -102,6 +102,7 @@ fn load_config() -> ProjectConfig {
         turbopuffer: config::TurbopufferConfig {
             api_key: "${TURBOPUFFER_API_KEY}".to_string(),
             base_namespace: Some("${TURBOPUFFER_NAMESPACE}".to_string()),
+            region: Some("${TURBOPUFFER_REGION}".to_string()),
         },
         providers: config::ProvidersConfig::default(),
     }

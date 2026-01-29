@@ -101,8 +101,8 @@ pub async fn cmd_dangerously_reset_turbopuffer(config: ProjectConfig) -> Result<
 
     println!("\nDeleting turbopuffer namespaces...");
 
-    // Create turbopuffer client
-    let client = rs_puff::Client::new(config.turbopuffer_api_key()?);
+    // Create turbopuffer client with region support
+    let client = config.create_turbopuffer_client()?;
 
     for ns in unique_namespaces {
         match client.namespace(ns).delete_all().await {

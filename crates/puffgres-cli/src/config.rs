@@ -33,6 +33,10 @@ pub struct TurbopufferConfig {
     /// If set, all turbopuffer namespaces will be prefixed with this value.
     #[serde(default)]
     pub base_namespace: Option<String>,
+    /// Optional region for turbopuffer (e.g., "aws-us-east-1", "gcp-us-central1").
+    /// If not set, uses the default turbopuffer API endpoint.
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 /// Configuration for external providers (embeddings, etc.)
@@ -93,6 +97,25 @@ impl ProjectConfig {
     /// Returns an error if required environment variables are not set.
     pub fn turbopuffer_api_key(&self) -> Result<String> {
         self.resolve_env_required(&self.turbopuffer.api_key, "TURBOPUFFER_API_KEY")
+    }
+
+    /// Get the resolved Turbopuffer region, if configured.
+    pub fn turbopuffer_region(&self) -> Option<String> {
+        self.turbopuffer
+            .region
+            .as_ref()
+            .map(|r| self.resolve_env(r))
+            .filter(|r| !r.is_empty())
+    }
+
+    /// Create a Turbopuffer client with the configured API key and region.
+    pub fn create_turbopuffer_client(&self) -> Result<rs_puff::Client> {
+        let api_key = self.turbopuffer_api_key()?;
+        let client = match self.turbopuffer_region() {
+            Some(region) => rs_puff::Client::with_region(api_key, &region),
+            None => rs_puff::Client::new(api_key),
+        };
+        Ok(client)
     }
 
     /// Resolve environment variables in a string, returning an error if any are missing.
@@ -258,6 +281,7 @@ mod tests {
             turbopuffer: TurbopufferConfig {
                 api_key: "key".to_string(),
                 base_namespace: None,
+                region: None,
             },
             providers: ProvidersConfig::default(),
         };
@@ -268,5 +292,120 @@ mod tests {
             "prefix_hello_suffix"
         );
         assert_eq!(config.resolve_env("no_vars"), "no_vars");
+    }
+
+    #[test]
+    fn test_turbopuffer_region_none() {
+        let config = ProjectConfig {
+            postgres: PostgresConfig {
+                connection_string: "postgres://localhost".to_string(),
+            },
+            turbopuffer: TurbopufferConfig {
+                api_key: "key".to_string(),
+                base_namespace: None,
+                region: None,
+            },
+            providers: ProvidersConfig::default(),
+        };
+
+        assert!(config.turbopuffer_region().is_none());
+    }
+
+    #[test]
+    fn test_turbopuffer_region_static() {
+        let config = ProjectConfig {
+            postgres: PostgresConfig {
+                connection_string: "postgres://localhost".to_string(),
+            },
+            turbopuffer: TurbopufferConfig {
+                api_key: "key".to_string(),
+                base_namespace: None,
+                region: Some("aws-us-east-1".to_string()),
+            },
+            providers: ProvidersConfig::default(),
+        };
+
+        assert_eq!(config.turbopuffer_region(), Some("aws-us-east-1".to_string()));
+    }
+
+    #[test]
+    fn test_turbopuffer_region_from_env() {
+        std::env::set_var("TEST_REGION", "gcp-us-central1");
+
+        let config = ProjectConfig {
+            postgres: PostgresConfig {
+                connection_string: "postgres://localhost".to_string(),
+            },
+            turbopuffer: TurbopufferConfig {
+                api_key: "key".to_string(),
+                base_namespace: None,
+                region: Some("${TEST_REGION}".to_string()),
+            },
+            providers: ProvidersConfig::default(),
+        };
+
+        assert_eq!(config.turbopuffer_region(), Some("gcp-us-central1".to_string()));
+    }
+
+    #[test]
+    fn test_turbopuffer_region_empty_env_returns_none() {
+        std::env::set_var("TEST_EMPTY_REGION", "");
+
+        let config = ProjectConfig {
+            postgres: PostgresConfig {
+                connection_string: "postgres://localhost".to_string(),
+            },
+            turbopuffer: TurbopufferConfig {
+                api_key: "key".to_string(),
+                base_namespace: None,
+                region: Some("${TEST_EMPTY_REGION}".to_string()),
+            },
+            providers: ProvidersConfig::default(),
+        };
+
+        // Empty region should return None (so we fall back to default API)
+        assert!(config.turbopuffer_region().is_none());
+    }
+
+    #[test]
+    fn test_create_turbopuffer_client_with_region() {
+        std::env::set_var("TEST_API_KEY", "test-key-123");
+
+        let config = ProjectConfig {
+            postgres: PostgresConfig {
+                connection_string: "postgres://localhost".to_string(),
+            },
+            turbopuffer: TurbopufferConfig {
+                api_key: "${TEST_API_KEY}".to_string(),
+                base_namespace: None,
+                region: Some("aws-us-east-1".to_string()),
+            },
+            providers: ProvidersConfig::default(),
+        };
+
+        // Should not error when creating client
+        let client = config.create_turbopuffer_client();
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_create_turbopuffer_client_without_region() {
+        std::env::set_var("TEST_API_KEY_2", "test-key-456");
+
+        let config = ProjectConfig {
+            postgres: PostgresConfig {
+                connection_string: "postgres://localhost".to_string(),
+            },
+            turbopuffer: TurbopufferConfig {
+                api_key: "${TEST_API_KEY_2}".to_string(),
+                base_namespace: None,
+                region: None,
+            },
+            providers: ProvidersConfig::default(),
+        };
+
+        // Should not error when creating client (uses default API endpoint)
+        let client = config.create_turbopuffer_client();
+        assert!(client.is_ok());
     }
 }
