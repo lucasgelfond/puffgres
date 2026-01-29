@@ -150,6 +150,7 @@ impl ProjectConfig {
     }
 
     /// Get the resolved base namespace prefix, if configured.
+    /// Uses ${TURBOPUFFER_NAMESPACE} from the config which resolves from environment.
     pub fn base_namespace(&self) -> Option<String> {
         self.turbopuffer
             .base_namespace
@@ -159,6 +160,7 @@ impl ProjectConfig {
     }
 
     /// Apply the base namespace prefix to a namespace name.
+    /// Format: {TURBOPUFFER_NAMESPACE}_{namespace}
     pub fn apply_namespace_prefix(&self, namespace: &str) -> String {
         if let Some(prefix) = self.base_namespace() {
             format!("{}_{}", prefix, namespace)

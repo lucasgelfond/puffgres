@@ -492,6 +492,7 @@ mod tests {
                 transform_type: TransformType::Js,
                 path: Some("./transforms/test.ts".into()),
                 entry: None,
+                allow_fewer_results: false,
             })
             .build()
             .unwrap()
@@ -507,6 +508,7 @@ mod tests {
                 transform_type: TransformType::Js,
                 path: None,
                 entry: None,
+                allow_fewer_results: false,
             })
             .build()
             .unwrap()

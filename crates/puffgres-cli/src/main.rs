@@ -101,7 +101,7 @@ fn load_config() -> ProjectConfig {
         },
         turbopuffer: config::TurbopufferConfig {
             api_key: "${TURBOPUFFER_API_KEY}".to_string(),
-            base_namespace: Some("${PUFFGRES_BASE_NAMESPACE}".to_string()),
+            base_namespace: Some("${TURBOPUFFER_NAMESPACE}".to_string()),
         },
         providers: config::ProvidersConfig::default(),
     }
