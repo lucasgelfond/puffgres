@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import http from 'http';
-import https from 'https';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import Turbopuffer from '@turbopuffer/turbopuffer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,11 +36,18 @@ loadEnv();
 
 const PORT = process.env.PORT || 3333;
 const API_KEY = process.env.TURBOPUFFER_API_KEY;
+const REGION = process.env.TURBOPUFFER_REGION || 'aws-us-east-1';
 
 if (!API_KEY) {
   console.error('Error: TURBOPUFFER_API_KEY environment variable is required');
   process.exit(1);
 }
+
+// Initialize Turbopuffer client
+const tpuf = new Turbopuffer({
+  apiKey: API_KEY,
+  region: REGION,
+});
 
 const server = http.createServer(async (req, res) => {
   // Serve index.html
@@ -58,7 +65,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // API proxy endpoint
+  // API proxy endpoint - query documents
   if (req.method === 'POST' && req.url === '/api/query') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -72,9 +79,15 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        const tpufResponse = await queryTurbopuffer(namespace, limit || 10);
+        const ns = tpuf.namespace(namespace);
+        const result = await ns.query({
+          rank_by: ['id', 'asc'],
+          top_k: limit || 10,
+          include_attributes: true,
+        });
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(tpufResponse));
+        res.end(JSON.stringify(result));
       } catch (err) {
         console.error('Error:', err.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -84,53 +97,53 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // List namespaces
+  if (req.method === 'GET' && req.url.startsWith('/api/namespaces') && !req.url.includes('/api/namespaces/')) {
+    try {
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const cursor = url.searchParams.get('cursor');
+      const prefix = url.searchParams.get('prefix');
+
+      const params = {};
+      if (prefix) params.prefix = prefix;
+      if (cursor) params.cursor = cursor;
+
+      // Use the SDK's namespaces method - returns an async iterator/page
+      const page = await tpuf.namespaces(params);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        namespaces: page.data || [],
+        next_cursor: page.nextPageInfo()?.cursor || null,
+      }));
+    } catch (err) {
+      console.error('Error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // Delete namespace
+  if (req.method === 'DELETE' && req.url.startsWith('/api/namespaces/')) {
+    const namespace = decodeURIComponent(req.url.replace('/api/namespaces/', ''));
+    try {
+      const ns = tpuf.namespace(namespace);
+      await ns.deleteAll();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      console.error('Error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   // 404
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not found');
 });
-
-function queryTurbopuffer(namespace, limit) {
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({
-      rank_by: ['id', 'asc'],
-      top_k: limit,
-      include_attributes: true
-    });
-
-    const options = {
-      hostname: 'api.turbopuffer.com',
-      port: 443,
-      path: `/v2/namespaces/${encodeURIComponent(namespace)}/query`,
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${API_KEY}`,
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload)
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (res.statusCode !== 200) {
-            reject(new Error(parsed.error || parsed.message || `Turbopuffer returned ${res.statusCode}`));
-          } else {
-            resolve(parsed);
-          }
-        } catch (e) {
-          reject(new Error(`Invalid response from Turbopuffer: ${data.substring(0, 200)}`));
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.write(payload);
-    req.end();
-  });
-}
 
 server.listen(PORT, () => {
   console.log(`Debug UI running at http://localhost:${PORT}`);

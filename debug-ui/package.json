@@ -1,0 +1,11 @@
+{
+  "name": "puffgres-debug-ui",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@turbopuffer/turbopuffer": "^1.14.8"
+  }
+}

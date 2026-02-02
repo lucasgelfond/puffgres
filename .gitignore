@@ -7,3 +7,4 @@ puffgres.toml
 .env
 **/.DS_Store
 /examples/**/node_modules
+/debug-ui/node_modules
